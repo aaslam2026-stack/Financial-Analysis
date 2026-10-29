@@ -64,7 +64,11 @@ function parseNum(v) {
 
 function parseRows(rows) {
   rows = rows.filter((r) => r && r.some((c) => String(c ?? '').trim() !== ''));
-  let hIdx = rows.findIndex((r) => r.slice(1).some((c) => /(19|20)\d{2}/.test(String(c ?? ''))));
+  // Header = the row with the most year-like cells (e.g. 2024, FY2024, 2024A), so titles such as
+  // "Year ended December 31, 2024" above the real header row are skipped
+  const isYear = (c) => /^\D{0,4}(19|20)\d{2}\D{0,3}$/.test(String(c ?? '').trim());
+  let hIdx = -1, best = 0;
+  rows.forEach((r, i) => { const n = r.slice(1).filter(isYear).length; if (n > best) { best = n; hIdx = i; } });
   let years;
   if (hIdx === -1) {
     const width = Math.max(...rows.map((r) => r.length)) - 1;
@@ -238,37 +242,121 @@ Equity,4100000,4900000,5900000,7000000,8200000
 CapEx,450000,500000,600000,700000,800000
 Operating Cash Flow,1200000,1400000,1700000,2000000,2400000`;
 
-function applyRows(rows, company) {
+const SAMPLE_COMPANY = 'Aurora Retail Co. (sample)';
+let uploadNote = '';
+
+// Reusable upload panel, placed into every .uploader-slot (workspace, dashboard, My Data)
+function uploaderHTML() {
+  return `<div class="uploader">
+    <label class="drop">
+      <input type="file" class="file-in" accept=".pdf,.xlsx,.xls,.csv" hidden>
+      <svg class="drop-icon" viewBox="0 0 24 24" width="30" height="30" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M12 18v-6M9.5 14.5 12 12l2.5 2.5"/></svg>
+      <strong>Drag and drop your financial statements</strong>
+      <span class="muted small">or <u>browse files</u></span>
+      <span class="formats"><b>PDF</b><b>XLSX</b><b>XLS</b><b>CSV</b></span>
+    </label>
+    <div class="form-grid tight">
+      <div class="field"><label>Company name</label><input class="co-name" placeholder="e.g. Acme Holdings" value="${esc(state.company === SAMPLE_COMPANY ? '' : state.company || '')}"></div>
+      <div class="field"><label>Figures are in</label><select class="units">
+        <option value="auto">Auto-detect</option><option value="1">Actual amounts</option><option value="1000">Thousands</option><option value="1000000">Millions</option>
+      </select></div>
+    </div>
+    <div class="row">
+      <button class="btn ghost" data-action="sample">Use sample company</button>
+      <a class="link" href="samples/sample-financials.pdf" download>Sample PDF</a>
+      <a class="link" href="samples/sample-financials.csv" download>CSV template</a>
+    </div>
+    <p class="upload-msg small" role="status">${uploadNote}</p>
+  </div>`;
+}
+function renderUploaders() { $$('.uploader-slot').forEach((s) => { s.innerHTML = uploaderHTML(); }); }
+function msg(t, err, root) {
+  (root ? [root.querySelector('.upload-msg')] : $$('.upload-msg')).forEach((el) => { if (el) { el.textContent = t; el.className = `upload-msg small ${err ? 'err' : 'ok'}`; } });
+}
+
+function applyRows(rows, company, mult = 'auto', root, source = '') {
   const parsed = parseRows(rows);
   if (!Object.keys(parsed.items).length) {
-    msg('Could not find any known line items. Check the first column has labels like "Revenue" and the first row has years.', true);
-    return;
+    msg('No recognisable line items were found. Check that line items (e.g. "Revenue") are in the first column and years are in a header row.', true, root);
+    return false;
   }
-  state = { company: company || $('#companyName').value.trim() || 'My Company', years: parsed.years, items: derive(parsed.items) };
+  if (mult === 'auto') {
+    const text = rows.slice(0, 40).map((r) => r.join(' ')).join(' ').toLowerCase();
+    // Matches headers such as "(in USD thousands)", "in millions of dollars", "$000s", "€m"
+    mult = /\b(in|of)\b[^,.;]{0,20}\bmillions?\b|\(millions?\)|[$€£]\s?m\b|\busd ?m\b/.test(text) ? 1e6
+      : /\b(in|of)\b[^,.;]{0,20}\bthousands?\b|\(thousands?\)|\(000s?\)|[$€£]\s?000|'000|\busd ?000/.test(text) ? 1e3 : 1;
+  }
+  const items = Object.fromEntries(Object.entries(parsed.items).map(([k, a]) => [k, a.map((v) => (v == null ? null : v * +mult))]));
+  state = { company: company || 'My Company', years: parsed.years, items: derive(items) };
   dash = { from: 0, to: null, metric: 'revenue' };
   save();
   const found = Object.keys(parsed.items).length;
-  msg(`Loaded ${found} line items across ${parsed.years.length} periods.${S('revenue') ? '' : ' Note: no Revenue row found, so most models will use default values.'}`);
+  uploadNote = `${source ? esc(source) + ': ' : ''}found ${found} line items across ${parsed.years.length} periods${+mult > 1 ? ` (scaled from ${+mult === 1e6 ? 'millions' : 'thousands'})` : ''}.${S('revenue') ? '' : ' No revenue line was found, so some models will use default values.'}`;
   refreshAll();
+  return true;
 }
-function msg(t, err) { const el = $('#uploadMsg'); el.textContent = t; el.style.color = err ? 'var(--red)' : 'var(--green)'; }
+const loadSample = () => applyRows(parseCSV(SAMPLE_CSV), SAMPLE_COMPANY, 1, null, 'Sample company');
 
-function handleFile(file) {
+/* PDF reading (pdf.js is loaded only when a PDF is uploaded) */
+const PDFJS = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/';
+let pdfjsReady = null;
+function loadPdfJs() {
+  return (pdfjsReady ??= new Promise((res, rej) => {
+    const s = document.createElement('script');
+    s.src = PDFJS + 'pdf.min.js';
+    s.onload = () => { window.pdfjsLib.GlobalWorkerOptions.workerSrc = PDFJS + 'pdf.worker.min.js'; res(window.pdfjsLib); };
+    s.onerror = () => { pdfjsReady = null; rej(new Error('The PDF reader failed to load. Check your internet connection.')); };
+    document.head.appendChild(s);
+  }));
+}
+const NUM_TOKEN = /^\(?[-–]?\$?\(?\d[\d,]*(\.\d+)?\)?%?$|^[—–-]$/;
+function lineToRow(text) {
+  const toks = text.replace(/\$\s+/g, '$').replace(/\(\s+/g, '(').replace(/\s+\)/g, ')').split(/\s+/).filter(Boolean);
+  let i = toks.length;
+  while (i > 0 && NUM_TOKEN.test(toks[i - 1])) i--;
+  // Header lines like "FY2024 FY2023" have no numbers but several years
+  const yearToks = toks.filter((t) => /^\D{0,4}(19|20)\d{2}\D{0,3}$/.test(t));
+  if (i === toks.length && yearToks.length >= 2) return ['', ...yearToks];
+  return [toks.slice(0, i).join(' ').replace(/[.:\s]+$/, ''), ...toks.slice(i).map((t) => (/^[—–-]$/.test(t) ? '' : t))];
+}
+async function pdfToRows(buf) {
+  const lib = await loadPdfJs();
+  const pdf = await lib.getDocument({ data: buf }).promise;
+  const rows = [];
+  for (let n = 1; n <= pdf.numPages; n++) {
+    const { items } = await (await pdf.getPage(n)).getTextContent();
+    const lines = [];
+    items.filter((it) => it.str.trim()).forEach((it) => {
+      const x = it.transform[4], y = it.transform[5];
+      let line = lines.find((l) => Math.abs(l.y - y) < 3);
+      if (!line) lines.push((line = { y, parts: [] }));
+      line.parts.push({ x, s: it.str.trim() });
+    });
+    lines.sort((a, b) => b.y - a.y).forEach((l) => rows.push(lineToRow(l.parts.sort((a, b) => a.x - b.x).map((p) => p.s).join(' '))));
+  }
+  return rows;
+}
+
+async function handleFile(file, root) {
   if (!file) return;
-  const name = file.name.replace(/\.[^.]+$/, '');
-  const reader = new FileReader();
-  if (/\.csv$/i.test(file.name)) {
-    reader.onload = () => applyRows(parseCSV(reader.result), $('#companyName').value.trim() || name);
-    reader.readAsText(file);
-  } else {
-    if (!window.XLSX) return msg('Excel reader failed to load. Please check your connection or upload a CSV.', true);
-    reader.onload = () => {
-      const wb = XLSX.read(new Uint8Array(reader.result), { type: 'array' });
-      // Combine all sheets so separate P&L / balance sheet tabs both get read
-      const rows = wb.SheetNames.flatMap((n) => XLSX.utils.sheet_to_json(wb.Sheets[n], { header: 1, raw: true, defval: '' }));
-      applyRows(rows, $('#companyName').value.trim() || name);
-    };
-    reader.readAsArrayBuffer(file);
+  const company = root?.querySelector('.co-name')?.value.trim() || file.name.replace(/\.[^.]+$/, '').replace(/[-_]+/g, ' ');
+  const mult = root?.querySelector('.units')?.value || 'auto';
+  msg(`Reading ${file.name}…`, false, root);
+  try {
+    let rows;
+    if (/\.csv$/i.test(file.name)) rows = parseCSV(await file.text());
+    else if (/\.pdf$/i.test(file.name)) {
+      rows = await pdfToRows(await file.arrayBuffer());
+      if (!rows.length) throw new Error('No text found in this PDF. It may be a scanned image. Please upload the Excel or CSV version instead.');
+    } else {
+      if (!window.XLSX) throw new Error('The Excel reader failed to load. Check your internet connection, or upload a CSV.');
+      const wb = XLSX.read(new Uint8Array(await file.arrayBuffer()), { type: 'array' });
+      // Combine all sheets so separate P&L / balance sheet tabs are all read
+      rows = wb.SheetNames.flatMap((n) => XLSX.utils.sheet_to_json(wb.Sheets[n], { header: 1, raw: true, defval: '' }));
+    }
+    applyRows(rows, company, mult, root, file.name);
+  } catch (e) {
+    msg(e.message || String(e), true, root);
   }
 }
 
@@ -715,13 +803,6 @@ const MODELS = [
 
 let currentModel = 'dcf';
 
-function renderModelSelect() {
-  const groups = [...new Set(MODELS.map((m) => m.group))];
-  $('#modelSelect').innerHTML = groups.map((g) => `<optgroup label="${g}">${MODELS.filter((m) => m.group === g)
-    .map((m) => `<option value="${m.id}"${m.id === currentModel ? ' selected' : ''}>${m.name}</option>`).join('')}</optgroup>`).join('');
-  renderModel();
-}
-
 function downloadModel() {
   const m = MODELS.find((x) => x.id === currentModel);
   const inputs = $$('#modelArea input').map((i) => [i.labels[0]?.textContent || i.dataset.k, i.type === 'text' ? i.value : parseFloat(i.value) || 0]);
@@ -732,7 +813,7 @@ function renderModel() {
   const m = MODELS.find((x) => x.id === currentModel), d = defaults();
   const fields = m.inputs(d).map(([k, label, val, type]) =>
     `<div class="field"><label for="in-${k}">${label}</label><input id="in-${k}" data-k="${k}" ${type === 'text' ? 'type="text"' : 'type="number" step="any"'} value="${esc(val)}"></div>`).join('');
-  $('#modelArea').innerHTML = `<div class="model"><div class="glass inputs"><h3>${m.name}</h3><p class="muted small">${m.desc}</p>${fields || `<p class="small">${hasData() ? `Using data for <strong>${esc(state.company)}</strong>.` : ''}</p>`}${hasData() ? '' : '<p class="small muted">Tip: upload statements to pre-fill these inputs.</p>'}</div><div class="results" id="results"></div></div>`;
+  $('#modelArea').innerHTML = `<div class="model"><div class="glass inputs"><h3>Assumptions</h3>${fields || `<p class="small">${hasData() ? `Using data for <strong>${esc(state.company)}</strong>.` : ''}</p>`}${hasData() ? '' : '<p class="small muted">Tip: upload statements to pre-fill these inputs.</p>'}</div><div class="results" id="results"></div></div>`;
   $$('#modelArea input').forEach((i) => i.addEventListener('input', runModel));
   runModel();
 }
@@ -818,122 +899,204 @@ function downloadReport() {
   exportXlsx($('#report'), inputs, `${$('#f-name').value || 'Project'}: Feasibility Report`, `${slug($('#f-name').value)}-feasibility.xlsx`);
 }
 
-/* ---------- Sample model library ---------- */
-const SAMPLES = [
-  { id: 'dashboard', title: 'Performance Dashboard', group: 'Reporting',
-    desc: 'An interactive, Power BI-style view of your uploaded statements.',
-    outputs: ['KPI cards: revenue, EBITDA, net income, net debt, CAGR', 'Trend with YoY growth, margins and a profit bridge', 'Year and metric filters, plus a full financial matrix'],
-    best: 'Board packs and monthly management reporting.' },
-  { id: 'powerbi', title: 'Power BI Dataset', group: 'Reporting', file: 'powerbi-dataset.xlsx', noTry: true,
-    desc: 'A clean Excel file shaped for Power BI Desktop, made with one click on the dashboard.',
-    outputs: ['FactFinancials: company, year, category, metric, value', 'Ratios table with percent and multiple formats', 'README tab with step-by-step import instructions'],
-    best: 'Teams that already report in Power BI.' },
+/* ---------- Model library (catalog) ---------- */
+const CATALOG = [
   { id: 'dcf', group: 'Valuation', file: 'dcf-valuation.xlsx',
-    outputs: ['Enterprise value, equity value and value per share', '5-year free cash flow projection', 'WACC × terminal growth sensitivity, bear/base/bull cases'],
-    best: 'Valuing a whole business from its future cash flows.' },
+    outputs: ['Enterprise value, equity value and value per share', '5-year free cash flow projection', 'WACC × terminal growth sensitivity; bear, base and bull cases'],
+    needs: 'Income statement, balance sheet (cash and debt) and CapEx', best: 'Valuing a whole business from its future cash flows.' },
   { id: 'comps', group: 'Valuation', file: 'comparables.xlsx',
-    outputs: ['Implied equity value from EV/EBITDA, EV/Sales and P/E', 'Low, median and high valuation range', 'Football-field chart'],
-    best: 'A market cross-check on your DCF.' },
+    outputs: ['Implied value from EV/EBITDA, EV/Sales and P/E', 'Low, median and high valuation range', 'Football-field chart'],
+    needs: 'Revenue, EBITDA and net income, plus peer multiples', best: 'A market cross-check on your DCF.' },
   { id: 'wacc', group: 'Valuation', file: 'wacc.xlsx',
-    outputs: ['WACC, cost of equity (CAPM), after-tax cost of debt', 'Debt and equity weights', 'Capital structure chart'],
-    best: 'Setting the discount rate for the DCF and project appraisals.' },
+    outputs: ['WACC and cost of equity (CAPM)', 'After-tax cost of debt', 'Capital structure weights'],
+    needs: 'Balance sheet (debt and equity) and market inputs', best: 'Setting the discount rate for valuations and projects.' },
   { id: 'montecarlo', group: 'Valuation', file: 'monte-carlo.xlsx',
-    outputs: ['P10 / P50 / P90 enterprise value', 'Probability of beating the base case', 'Distribution chart from thousands of runs'],
-    best: 'Showing uncertainty to investors or a credit committee.' },
+    outputs: ['P10 / P50 / P90 enterprise value', 'Probability of beating the base case', 'Distribution of thousands of outcomes'],
+    needs: 'Income statement (revenue and EBITDA)', best: 'Showing valuation risk to investors or a credit committee.' },
   { id: 'lbo', group: 'Deals & financing', file: 'lbo.xlsx',
-    outputs: ['Sponsor IRR and MOIC', 'Year-by-year debt schedule and cash sweep', 'Entry vs exit equity bridge'],
-    best: 'Testing a private equity or management buyout.' },
+    outputs: ['Sponsor IRR and MOIC', 'Year-by-year debt schedule with cash sweep', 'Entry vs exit equity value'],
+    needs: 'Income statement (EBITDA)', best: 'Testing a private equity or management buyout.' },
   { id: 'loan', group: 'Deals & financing', file: 'loan-schedule.xlsx',
-    outputs: ['Payment per period, total interest, total paid', 'Annual principal, interest and balance', 'Balance run-off chart'],
-    best: 'Term loans, equipment finance and refinancing.' },
+    outputs: ['Payment per period and total interest', 'Annual principal and interest split', 'Outstanding balance over time'],
+    needs: 'Loan amount and terms (pre-filled from total debt)', best: 'Term loans, equipment finance and refinancing.' },
   { id: 'npv', group: 'Projects & investments', file: 'npv-irr.xlsx',
-    outputs: ['NPV, IRR, MIRR and profitability index', 'Simple and discounted payback', 'Cumulative cash flow chart'],
-    best: 'Go / no-go decisions on capital projects.' },
+    outputs: ['NPV, IRR, MIRR and profitability index', 'Simple and discounted payback', 'Cumulative cash flow profile'],
+    needs: 'Project cash flows (pre-filled from EBITDA)', best: 'Go / no-go decisions on capital projects.' },
   { id: 'breakeven', group: 'Projects & investments', file: 'break-even.xlsx',
     outputs: ['Break-even units and revenue', 'Margin of safety and operating leverage', 'Revenue vs cost chart'],
-    best: 'Pricing, new products and cost planning.' },
-  { id: 'feasibility', title: 'Feasibility Report', group: 'Projects & investments', file: 'feasibility-report.xlsx',
-    desc: 'A complete investment appraisal with a clear verdict and recommendations.',
-    outputs: ['Verdict: Feasible, Feasible with conditions or Not feasible', '10-year cash flows, NPV, IRR, payback, break-even', 'Sensitivity to revenue and cost changes'],
-    best: 'Business cases for lenders, investors or the board.' },
+    needs: 'Fixed costs, price and variable cost per unit', best: 'Pricing, new products and cost planning.' },
+  { id: 'feasibility', group: 'Projects & investments', file: 'feasibility-report.xlsx', href: '#feasibility', cta: 'Build this report',
+    title: 'Feasibility Report', desc: 'A complete investment appraisal of a new project with a clear verdict and recommendations.',
+    outputs: ['Verdict: Feasible, Feasible with conditions or Not feasible', 'Cash flows, NPV, IRR, payback and break-even', 'Sensitivity to revenue and cost changes'],
+    needs: 'Project assumptions only; no statements needed', best: 'Business cases for lenders, investors or the board.' },
   { id: 'ratios', group: 'Performance', file: 'ratio-analysis.xlsx',
     outputs: ['Growth, margin, liquidity and leverage ratios', 'Return on assets and equity', 'Every year side by side'],
-    best: 'Credit reviews and benchmarking.' },
+    needs: 'Income statement and balance sheet (cash flow optional)', best: 'Credit reviews and benchmarking.' },
   { id: 'forecast', group: 'Performance', file: '3-statement-forecast.xlsx',
-    outputs: ['Projected revenue, gross profit, EBITDA, net income', 'Cash and debt roll-forward', 'History vs forecast chart'],
-    best: 'Budgets and business plans.' },
+    outputs: ['Projected revenue, EBITDA and net income', 'Cash and debt roll-forward', 'History vs forecast chart'],
+    needs: 'Income statement, plus opening cash and debt', best: 'Budgets and business plans.' },
+  { id: 'dashboard', group: 'Reporting', file: 'powerbi-dataset.xlsx', href: '#dashboard', cta: 'Open dashboard',
+    title: 'Dashboard & Power BI Export', desc: 'An interactive, Power BI-style view of your statements, with a one-click dataset for Power BI Desktop.',
+    outputs: ['KPI cards, trends, margins and a profit bridge', 'Year and metric filters, plus a full financial matrix', 'Power BI dataset: FactFinancials and Ratios tables'],
+    needs: 'Income statement and balance sheet (cash flow optional)', best: 'Board packs and monthly management reporting.' },
 ];
+const CATEGORIES = ['All models', ...new Set(CATALOG.map((c) => c.group))];
+let currentCat = 'All models', examples = null;
 
-function renderSamples() {
-  $('#sampleGrid').innerHTML = SAMPLES.map((s) => {
-    const m = MODELS.find((x) => x.id === s.id);
-    return `<article class="glass sample">
-      <div class="thumb"><img src="samples/previews/${s.id}.jpg" alt="Preview of the ${esc(s.title || m.name)} sample" loading="lazy"></div>
-      <div class="body">
-        <p class="eyebrow">${s.group}</p>
-        <h3>${s.title || m.name}</h3>
-        <p>${s.desc || m.desc}</p>
-        <ul>${s.outputs.map((o) => `<li>${o}</li>`).join('')}</ul>
-        <div class="best"><strong>Best for:</strong> ${s.best}</div>
-        <div class="row">
-          ${s.noTry ? '' : `<button class="btn" data-try="${s.id}">Try with sample data</button>`}
-          ${s.file ? `<a class="btn ghost" href="samples/models/${s.file}" download>Download sample (.xlsx)</a>` : ''}
-        </div>
-      </div>
-    </article>`;
-  }).join('');
+function sampleState() {
+  const p = parseRows(parseCSV(SAMPLE_CSV));
+  return { company: SAMPLE_COMPANY, years: p.years, items: derive(p.items) };
 }
 
-function trySample(id) {
-  if (!hasData()) applyRows(parseCSV(SAMPLE_CSV), 'Aurora Retail Co. (sample)');
-  if (id === 'dashboard') return void (location.hash = '#dashboard');
-  if (id === 'feasibility') { location.hash = '#feasibility'; return generateReport(); }
-  currentModel = id;
-  location.hash = '#models';
+// Runs every model on the sample company once, so each card shows real example figures
+function computeExamples() {
+  if (examples) return examples;
+  const saved = state;
+  state = sampleState();
+  examples = {};
+  try {
+    const d = defaults();
+    MODELS.forEach((m) => {
+      const v = Object.fromEntries(m.inputs(d).map(([k, , val, t]) => [k, t === 'text' ? val : +val]));
+      const tpl = document.createElement('template');
+      tpl.innerHTML = m.run(v, d).html;
+      let pairs = [...tpl.content.querySelectorAll('.kpi')].map((k) => [k.querySelector('.label').textContent, k.querySelector('.value').textContent]);
+      if (!pairs.length) pairs = [...tpl.content.querySelectorAll('tbody tr')].map((tr) => [tr.cells[0].textContent, tr.cells[tr.cells.length - 1].textContent]).filter((p) => p[1] !== '—');
+      examples[m.id] = pairs.slice(0, 3);
+    });
+    const fv = Object.fromEntries(FEAS.map(([k, , val]) => [k, val])), { flows } = feasFlows(fv);
+    examples.feasibility = [['NPV', fmt(npv(fv.rate / 100, flows))], ['IRR', pct(irr(flows))], ['Payback', yrs(payback(flows))]];
+    examples.dashboard = [[`Revenue ${state.years.at(-1)}`, fmt(L('revenue'))], ['EBITDA margin', pct(L('ebitda') / L('revenue'))], ['Revenue CAGR', pct(cagr(S('revenue')))]];
+  } finally {
+    state = saved;
+  }
+  return examples;
+}
+
+function cardHTML(c, ex) {
+  const m = MODELS.find((x) => x.id === c.id), href = c.href || `#model/${c.id}`;
+  return `<article class="model-card">
+    <div class="mc-top"><span class="mc-cat">${c.group}</span><span class="mc-fmt">Excel export</span></div>
+    <h3><a href="${href}">${c.title || m.name}</a></h3>
+    <p class="mc-desc">${c.desc || m.desc}</p>
+    <div class="mc-example">
+      <div class="mc-ex-head">Example output · Aurora Retail Co.</div>
+      <dl>${(ex || []).map(([k, v]) => `<div><dt>${esc(k)}</dt><dd>${esc(v)}</dd></div>`).join('')}</dl>
+    </div>
+    <div class="mc-section"><h4>Key outputs</h4><ul>${c.outputs.map((o) => `<li>${o}</li>`).join('')}</ul></div>
+    <div class="mc-section"><h4>Data needed</h4><p>${c.needs}</p></div>
+    <p class="mc-best"><strong>Best for:</strong> ${c.best}</p>
+    <div class="mc-foot">
+      <a class="btn" href="${href}">${c.cta || 'Build this model'} <span aria-hidden="true">→</span></a>
+      <a class="link" href="samples/models/${c.file}" download>Sample .xlsx</a>
+    </div>
+  </article>`;
+}
+
+function renderLibrary() {
+  const ex = computeExamples();
+  $('#catTabs').innerHTML = CATEGORIES.map((c) => `<button data-cat="${c}" class="${c === currentCat ? 'on' : ''}">${c}<span>${c === 'All models' ? CATALOG.length : CATALOG.filter((x) => x.group === c).length}</span></button>`).join('');
+  $('#catalog').innerHTML = CATALOG.filter((c) => currentCat === 'All models' || c.group === currentCat).map((c) => cardHTML(c, ex[c.id])).join('');
+}
+
+/* ---------- Model workspace ---------- */
+let manualMode = false;
+
+function renderWorkspace(id) {
+  const m = MODELS.find((x) => x.id === id) || MODELS[0];
+  currentModel = m.id;
+  $('#wsCrumb').textContent = m.name;
+  $('#wsGroup').textContent = m.group;
+  $('#wsTitle').textContent = m.name;
+  $('#wsDesc').textContent = m.desc;
+  const groups = [...new Set(MODELS.map((x) => x.group))];
+  $('#modelSelect').innerHTML = groups.map((g) => `<optgroup label="${g}">${MODELS.filter((x) => x.group === g)
+    .map((x) => `<option value="${x.id}"${x.id === m.id ? ' selected' : ''}>${x.name}</option>`).join('')}</optgroup>`).join('');
+
+  const has = hasData();
+  const covered = [['Income statement', ['revenue', 'netIncome', 'ebitda']], ['Balance sheet', ['totalAssets', 'equity', 'debt', 'cash']], ['Cash flow', ['ocf', 'capex']]]
+    .map(([n, ks]) => `<span class="${ks.some((k) => state.items[k]) ? 'ok' : 'miss'}">${ks.some((k) => state.items[k]) ? '✓' : '–'} ${n}</span>`).join('');
+  $('#wsData').innerHTML = has
+    ? `<div class="data-summary">
+        <div class="ds-check" aria-hidden="true">✓</div>
+        <div class="grow">
+          <strong>${esc(state.company)}</strong>
+          <div class="muted small">${esc(state.years[0])}–${esc(state.years.at(-1))} · ${Object.keys(state.items).length} line items</div>
+          <div class="coverage">${covered}</div>
+        </div>
+        <a class="btn ghost" href="#upload">View data</a>
+        <button class="btn ghost" data-action="change-data">Upload different statements</button>
+      </div>
+      <div class="uploader-slot" hidden></div>`
+    : `<div class="uploader-slot"></div>
+      <p class="manual small muted">No statements to hand? <button class="link" data-action="manual">Continue with manual assumptions →</button></p>`;
+
+  const show = has || manualMode;
+  $('#wsModelStep').hidden = !show;
+  $$('#stepper li').forEach((li) => {
+    const s = +li.dataset.step;
+    li.className = s === 1 ? (has ? 'done' : 'active') : show ? 'active' : '';
+  });
+  if (show) renderModel();
 }
 
 /* ---------- Routing & init ---------- */
 function route() {
-  const view = (location.hash || '#dashboard').slice(1);
-  const valid = ['dashboard', 'upload', 'models', 'samples', 'feasibility'].includes(view) ? view : 'dashboard';
-  $$('.view').forEach((v) => v.classList.toggle('active', v.id === `view-${valid}`));
-  $$('nav a').forEach((a) => a.classList.toggle('active', a.dataset.view === valid));
-  if (valid === 'dashboard') renderDashboard();
-  if (valid === 'models') renderModelSelect();
-  if (valid === 'upload') renderPreview();
-  if (valid === 'samples') renderSamples();
-  window.scrollTo(0, 0);
+  const [view, arg] = (location.hash || '#library').slice(1).split('/');
+  const v = view === 'model' ? 'workspace' : ['library', 'dashboard', 'upload', 'feasibility'].includes(view) ? view : 'library';
+  $$('.view').forEach((el) => el.classList.toggle('active', el.id === `view-${v}`));
+  $$('nav a').forEach((a) => a.classList.toggle('active', a.dataset.view === (v === 'workspace' ? 'library' : v)));
+  $('#companyPill').textContent = hasData() ? state.company : 'No data loaded';
+  if (v === 'library') renderLibrary();
+  if (v === 'workspace') renderWorkspace(arg);
+  if (v === 'dashboard') renderDashboard();
+  if (v === 'upload') renderPreview();
+  renderUploaders();
 }
-function refreshAll() { $('#companyPill').textContent = hasData() ? state.company : 'No data loaded'; route(); }
+function refreshAll() {
+  route();
+  // After an upload inside a model, jump straight to the results
+  if ($('#view-workspace').classList.contains('active') && hasData()) $('#wsModelStep').scrollIntoView({ behavior: 'smooth' });
+}
 
 function init() {
   themeCharts();
   load();
-  $('#companyName').value = state.company || '';
 
-  const drop = $('#drop'), fi = $('#fileInput');
-  fi.addEventListener('change', () => { handleFile(fi.files[0]); fi.value = ''; });
-  ['dragover', 'dragenter'].forEach((e) => drop.addEventListener(e, (ev) => { ev.preventDefault(); drop.classList.add('over'); }));
-  ['dragleave', 'drop'].forEach((e) => drop.addEventListener(e, (ev) => { ev.preventDefault(); drop.classList.remove('over'); }));
-  drop.addEventListener('drop', (ev) => handleFile(ev.dataTransfer.files[0]));
-
-  $$('[data-action="sample"]').forEach((b) => b.addEventListener('click', () => applyRows(parseCSV(SAMPLE_CSV), 'Aurora Retail Co. (sample)')));
-  $('#dlTemplate').addEventListener('click', () => {
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(new Blob([SAMPLE_CSV], { type: 'text/csv' }));
-    a.download = 'financial-statements-template.csv';
-    a.click();
+  // Uploaders appear in several places, so their events are delegated
+  document.addEventListener('change', (e) => {
+    if (e.target.matches('.file-in')) { handleFile(e.target.files[0], e.target.closest('.uploader')); e.target.value = ''; }
   });
+  ['dragover', 'drop'].forEach((t) => window.addEventListener(t, (e) => e.preventDefault()));
+  document.addEventListener('dragover', (e) => e.target.closest?.('.drop')?.classList.add('over'));
+  document.addEventListener('dragleave', (e) => e.target.closest?.('.drop')?.classList.remove('over'));
+  document.addEventListener('drop', (e) => {
+    const d = e.target.closest?.('.drop');
+    if (!d) return;
+    d.classList.remove('over');
+    handleFile(e.dataTransfer.files[0], d.closest('.uploader'));
+  });
+  document.addEventListener('click', (e) => {
+    const a = e.target.closest('[data-action]');
+    if (!a) return;
+    if (a.dataset.action === 'sample') loadSample();
+    if (a.dataset.action === 'manual') { manualMode = true; route(); }
+    if (a.dataset.action === 'change-data') { a.closest('.data-summary').hidden = true; $('#wsData .uploader-slot').hidden = false; }
+  });
+
   $('#clearData').addEventListener('click', () => {
     state = { company: '', years: [], items: {} };
+    uploadNote = '';
+    manualMode = false;
     try { localStorage.removeItem(STORE); } catch (e) {}
-    $('#uploadMsg').textContent = 'Data cleared.';
-    refreshAll();
+    route();
   });
 
-  $('#sampleGrid').addEventListener('click', (e) => { const b = e.target.closest('[data-try]'); if (b) trySample(b.dataset.try); });
-
-  $('#modelSelect').addEventListener('change', (e) => { currentModel = e.target.value; renderModel(); });
+  $('#catTabs').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-cat]');
+    if (b) { currentCat = b.dataset.cat; renderLibrary(); }
+  });
+  $('#modelSelect').addEventListener('change', (e) => { location.hash = `#model/${e.target.value}`; });
   $('#dlModel').addEventListener('click', downloadModel);
 
   ['slFrom', 'slTo', 'slMetric'].forEach((id) => $('#' + id).addEventListener('change', () => {
@@ -953,7 +1116,7 @@ function init() {
   $('#dlReport').addEventListener('click', downloadReport);
 
   matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => { themeCharts(); route(); });
-  window.addEventListener('hashchange', route);
+  window.addEventListener('hashchange', () => { route(); window.scrollTo(0, 0); });
   route();
 }
 

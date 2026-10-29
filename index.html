@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Finance Studio</title>
-  <meta name="description" content="Upload financial statements and build DCF, IRR, LBO and more, with a dashboard and feasibility reports.">
+  <meta name="description" content="Choose a financial model, upload your statements (PDF, Excel or CSV) and get DCF, LBO, IRR and more, ready to export to Excel.">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Source+Serif+4:opsz,wght@8..60,500;8..60,600&display=swap">
@@ -15,30 +15,76 @@
 <body>
   <header class="topbar">
     <div class="topbar-inner">
-      <a class="brand" href="#dashboard">
+      <a class="brand" href="#library">
         <span class="mark">FS</span>
         <span class="brand-text">Finance Studio<small>Corporate Finance &amp; Valuation</small></span>
       </a>
       <nav>
+        <a href="#library" data-view="library">Model Library</a>
         <a href="#dashboard" data-view="dashboard">Dashboard</a>
-        <a href="#upload" data-view="upload">Upload Data</a>
-        <a href="#models" data-view="models">Models</a>
-        <a href="#samples" data-view="samples">Sample Models</a>
         <a href="#feasibility" data-view="feasibility">Feasibility Report</a>
+        <a href="#upload" data-view="upload">My Data</a>
       </nav>
       <div class="company-pill" id="companyPill">No data loaded</div>
     </div>
   </header>
 
   <main>
-    <!-- SAMPLE MODELS -->
-    <section id="view-samples" class="view">
-      <header class="page-head">
-        <p class="eyebrow">Model library</p>
-        <h1>Sample Models</h1>
-        <p class="muted">See what each option gives you before you start. Every sample is built from the same example company, Aurora Retail Co. Download the Excel file, or open the model with sample data and change the inputs yourself.</p>
+    <!-- MODEL LIBRARY (home) -->
+    <section id="view-library" class="view">
+      <div class="hero">
+        <div class="hero-inner">
+          <p class="eyebrow">Model library</p>
+          <h1>Financial models built from your statements</h1>
+          <p class="lead">Choose a model, upload your income statement, balance sheet and cash flow statement, and get a complete analysis you can export to Excel. Every example below uses our sample company, Aurora Retail Co.</p>
+          <ol class="steps-strip">
+            <li><span>1</span><div><strong>Choose a model</strong>DCF, LBO, IRR, comparables and more</div></li>
+            <li><span>2</span><div><strong>Upload your statements</strong>PDF, Excel (.xlsx) or CSV</div></li>
+            <li><span>3</span><div><strong>Review and export</strong>Adjust assumptions, then download to Excel</div></li>
+          </ol>
+        </div>
+      </div>
+      <div class="cat-tabs" id="catTabs"></div>
+      <div class="catalog" id="catalog"></div>
+    </section>
+
+    <!-- MODEL WORKSPACE -->
+    <section id="view-workspace" class="view">
+      <div class="crumbs"><a href="#library">Model Library</a> <span>/</span> <span id="wsCrumb"></span></div>
+      <header class="page-head row spread">
+        <div>
+          <p class="eyebrow" id="wsGroup"></p>
+          <h1 id="wsTitle"></h1>
+          <p class="muted" id="wsDesc"></p>
+        </div>
+        <div class="field ws-switch"><label for="modelSelect">Switch model</label><select id="modelSelect"></select></div>
       </header>
-      <div class="samples" id="sampleGrid"></div>
+      <ol class="stepper" id="stepper">
+        <li data-step="1"><span>1</span>Financial statements</li>
+        <li data-step="2"><span>2</span>Assumptions &amp; results</li>
+        <li data-step="3"><span>3</span>Export to Excel</li>
+      </ol>
+      <div class="glass card step">
+        <div class="step-head">
+          <span class="num">1</span>
+          <div>
+            <h3>Provide your financial statements</h3>
+            <p class="muted small">Upload your income statement, balance sheet and cash flow statement. We read the figures and pre-fill the model's assumptions in step 2.</p>
+          </div>
+        </div>
+        <div id="wsData"></div>
+      </div>
+      <div class="glass card step" id="wsModelStep">
+        <div class="step-head">
+          <span class="num">2</span>
+          <div class="grow">
+            <h3>Review assumptions and results</h3>
+            <p class="muted small">Change any assumption on the left. Results update instantly.</p>
+          </div>
+          <button class="btn" id="dlModel">Download Excel</button>
+        </div>
+        <div id="modelArea"></div>
+      </div>
     </section>
 
     <!-- DASHBOARD -->
@@ -46,15 +92,14 @@
       <header class="page-head row spread">
         <div>
           <p class="eyebrow">Performance overview</p>
-        <h1>Dashboard</h1>
-          <p class="muted">Interactive, Power BI-style report. Use the slicers to filter, or click a bar to focus on that year.</p>
+          <h1>Dashboard</h1>
+          <p class="muted">Interactive, Power BI-style report. Use the filters, or click a bar to focus on that year.</p>
         </div>
         <button class="btn" id="dlPowerBI" hidden>Export for Power BI</button>
       </header>
-      <div id="dashEmpty" class="glass card empty">
-        <h3>No financial statements yet</h3>
-        <p class="muted">Upload a CSV or Excel file, or try the sample data.</p>
-        <div class="row"><a class="btn" href="#upload">Upload data</a><button class="btn ghost" data-action="sample">Load sample</button></div>
+      <div id="dashEmpty" class="glass card">
+        <h3>Upload financial statements to build your dashboard</h3>
+        <div class="uploader-slot"></div>
       </div>
       <div id="dashContent" hidden>
         <div class="glass slicers">
@@ -75,34 +120,18 @@
       </div>
     </section>
 
-    <!-- UPLOAD -->
+    <!-- MY DATA -->
     <section id="view-upload" class="view">
       <header class="page-head">
         <p class="eyebrow">Data</p>
-        <h1>Upload Financial Statements</h1>
-        <p class="muted">CSV or Excel (.xlsx). Put line items in the first column and years across the top row.</p>
+        <h1>My Financial Statements</h1>
+        <p class="muted">Upload a PDF, Excel or CSV file. Statements can be on separate pages or sheets. Your data stays in this browser and is never sent to a server.</p>
       </header>
       <div class="grid two">
-        <div class="glass card">
-          <label class="drop" id="drop">
-            <input type="file" id="fileInput" accept=".csv,.xlsx,.xls" hidden>
-            <div class="drop-icon">⬆</div>
-            <strong>Drop your file here</strong>
-            <span class="muted small">or click to browse</span>
-          </label>
-          <div class="row">
-            <input id="companyName" placeholder="Company name" style="flex:1">
-          </div>
-          <div class="row">
-            <button class="btn ghost" data-action="sample">Load sample data</button>
-            <button class="btn ghost" id="dlTemplate">Download template</button>
-            <button class="btn ghost danger" id="clearData">Clear</button>
-          </div>
-          <p id="uploadMsg" class="small"></p>
-        </div>
+        <div class="glass card"><h3>Upload</h3><div class="uploader-slot"></div></div>
         <div class="glass card">
           <h3>Recognised line items</h3>
-          <p class="muted small">Matched automatically (case-insensitive). Missing items are derived where possible, e.g. EBITDA = EBIT + D&amp;A.</p>
+          <p class="muted small">Matched automatically (case-insensitive). Missing items are worked out where possible, e.g. EBITDA = EBIT + D&amp;A.</p>
           <div class="chips static">
             <span>Revenue / Sales</span><span>Cost of Goods Sold</span><span>Operating Expenses</span><span>EBITDA</span>
             <span>Depreciation &amp; Amortization</span><span>EBIT / Operating Income</span><span>Interest Expense</span>
@@ -110,26 +139,18 @@
             <span>Current Liabilities</span><span>Total Liabilities</span><span>Total Debt</span><span>Equity</span>
             <span>CapEx</span><span>Operating Cash Flow</span>
           </div>
+          <h3 style="margin-top:22px">Tips for PDFs</h3>
+          <ul class="tips">
+            <li>Use a PDF with selectable text (exported from Excel, Word or accounting software). Scanned images can't be read.</li>
+            <li>Years should appear in a header row, e.g. "2024 2023 2022".</li>
+            <li>If figures are "in thousands" or "in millions", the app detects it, or you can set it under <em>Figures are in</em>.</li>
+          </ul>
         </div>
       </div>
       <div class="glass card" id="previewCard" hidden>
-        <h3>Parsed data</h3>
+        <div class="row spread"><h3>Extracted data</h3><button class="btn ghost danger" id="clearData">Clear data</button></div>
         <div class="table-wrap" id="preview"></div>
       </div>
-    </section>
-
-    <!-- MODELS -->
-    <section id="view-models" class="view">
-      <header class="page-head">
-        <p class="eyebrow">Analysis</p>
-        <h1>Financial Models</h1>
-        <p class="muted">Pick what you need. Inputs are pre-filled from your statements, and you can change any of them.</p>
-      </header>
-      <div class="glass slicers">
-        <div class="field grow"><label for="modelSelect">Choose a model</label><select id="modelSelect"></select></div>
-        <button class="btn" id="dlModel">Download Excel</button>
-      </div>
-      <div id="modelArea"></div>
     </section>
 
     <!-- FEASIBILITY -->
@@ -146,6 +167,10 @@
       <div id="report"></div>
     </section>
   </main>
+
+  <footer class="site-foot">
+    <div>Finance Studio · Models are planning tools based on the data and assumptions you provide, not investment advice.</div>
+  </footer>
 
   <script src="app.js"></script>
 </body>

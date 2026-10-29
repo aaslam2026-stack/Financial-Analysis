@@ -3,19 +3,21 @@
 A corporate finance and valuation web app with a clean, institutional banking design. Build financial models from your own statements.
 Plain HTML, CSS and JavaScript, with no build step.
 
+## How it works
+
+1. **Model Library** (home page): browse 12 detailed model cards. Each one shows example results for the sample company, the key outputs, the data needed, what it is best for, and a sample Excel file.
+2. **Click a model** to open its workspace:
+   - **Step 1:** upload your financial statements as **PDF**, Excel (.xlsx/.xls) or CSV, use the sample company, or continue with manual assumptions.
+   - **Step 2:** review the assumptions (pre-filled from your statements) and the results.
+   - **Step 3:** download everything to Excel.
+
 ## Features
 
-- **Upload** financial statements as CSV or Excel (.xlsx). Line items go in the first column and years across the top row. A template is in `samples/sample-financials.csv`.
-- **Power BI-style dashboard** with year and metric slicers, KPI cards, a trend chart with YoY growth (click a bar to focus on that year), margins, a profit bridge (waterfall), a balance sheet chart, a financial matrix and ratios.
-  - **Export for Power BI**: downloads a tidy Excel dataset (`FactFinancials` and `Ratios` sheets) that loads straight into Power BI Desktop (Home → Get data → Excel workbook).
-- **Models**, picked from a dropdown, with inputs pre-filled from your data:
-  - Valuation: DCF (with sensitivity and scenarios), Comparables, WACC, Monte Carlo
-  - Deals & financing: LBO, Loan Schedule
-  - Projects & investments: NPV / IRR / MIRR / Payback, Break-even
-  - Performance: Ratio Analysis, 3-Statement Forecast
-  - **Download Excel**: exports the model's inputs, key results and every table (as real numbers) plus your source data.
-- **Sample Models** library: a card for every option with a preview image, what you get, what it is best for, a downloadable sample Excel file (`samples/models/`) and a "Try with sample data" button.
-- **Feasibility Report**: NPV, IRR, payback, sensitivity analysis, a verdict and recommendations. You can download it to Excel or print it / save it as a PDF.
+- **Models:** DCF (with sensitivity and scenarios), Comparables, WACC, Monte Carlo, LBO, Loan Schedule, NPV / IRR / MIRR / Payback, Break-even, Ratio Analysis, 3-Statement Forecast.
+- **Feasibility Report:** NPV, IRR, payback, sensitivity, a verdict and recommendations. You can export it to Excel or print it / save it as a PDF.
+- **Power BI-style dashboard** with filters, KPI cards, a trend chart, margins, a profit bridge and a financial matrix. **Export for Power BI** downloads a tidy dataset for Power BI Desktop.
+- **PDF reading:** text-based PDFs (exported from Excel, Word or accounting software) are read in the browser. Years are detected from the header row, negatives in (brackets) are handled, and "in thousands / millions" is detected automatically. Scanned image PDFs are not supported.
+- **Samples:** `samples/sample-financials.pdf`, `samples/sample-financials.csv` and one Excel output per model in `samples/models/`.
 
 Data stays in the browser (localStorage). Nothing is uploaded to a server.
 
