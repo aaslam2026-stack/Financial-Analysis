@@ -1,5 +1,5 @@
 /* Glass Finance Studio — plain JavaScript, no build step.
-   Libraries: Chart.js (charts), SheetJS (Excel parsing). Weather: Open-Meteo (free, no key). */
+   Libraries: Chart.js (charts), SheetJS (Excel import and export). */
 
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => [...document.querySelectorAll(s)];
@@ -130,23 +130,28 @@ const L = (k) => last(S(k));
 const hasData = () => !!S('revenue');
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
+// Formatted values keep their raw number (and an Excel number format) so exports stay numeric
+const tag = (s, raw, z) => Object.assign(new String(s), { raw, z });
+const bad = (n) => n == null || !isFinite(n);
 function fmt(n, money = true) {
-  if (n == null || !isFinite(n)) return '—';
+  if (bad(n)) return '—';
   const a = Math.abs(n), sign = n < 0 ? '-' : '', p = money ? '$' : '';
-  if (a >= 1e9) return `${sign}${p}${(a / 1e9).toFixed(2)}B`;
-  if (a >= 1e6) return `${sign}${p}${(a / 1e6).toFixed(2)}M`;
-  if (a >= 1e3) return `${sign}${p}${(a / 1e3).toFixed(1)}K`;
-  return `${sign}${p}${a.toFixed(a < 10 && a % 1 ? 2 : 0)}`;
+  const z = money ? '$#,##0;-$#,##0' : '#,##0';
+  if (a >= 1e9) return tag(`${sign}${p}${(a / 1e9).toFixed(2)}B`, n, z);
+  if (a >= 1e6) return tag(`${sign}${p}${(a / 1e6).toFixed(2)}M`, n, z);
+  if (a >= 1e3) return tag(`${sign}${p}${(a / 1e3).toFixed(1)}K`, n, z);
+  return tag(`${sign}${p}${a.toFixed(a < 10 && a % 1 ? 2 : 0)}`, n, money ? '$#,##0.00' : '#,##0.00');
 }
-const pct = (n, d = 1) => (n == null || !isFinite(n) ? '—' : `${(n * 100).toFixed(d)}%`);
-const xf = (n) => (n == null || !isFinite(n) ? '—' : `${n.toFixed(2)}x`);
-const yrs = (n) => (n == null || !isFinite(n) ? 'Never' : `${n.toFixed(1)} yrs`);
+const pct = (n, d = 1) => (bad(n) ? '—' : tag(`${(n * 100).toFixed(d)}%`, n, d > 1 ? '0.00%' : '0.0%'));
+const xf = (n) => (bad(n) ? '—' : tag(`${n.toFixed(2)}x`, n, '0.00"x"'));
+const yrs = (n) => (bad(n) ? 'Never' : tag(`${n.toFixed(1)} yrs`, n, '0.0 "yrs"'));
+const rawAttr = (c) => (c != null && c.raw != null ? ` data-v="${c.raw}" data-z="${esc(c.z)}"` : typeof c === 'number' ? ` data-v="${c}"` : '');
 
 const kpi = (label, value, delta = '', cls = '') =>
-  `<div class="glass kpi"><div class="label">${label}</div><div class="value">${value}</div>${delta ? `<div class="delta ${cls}">${delta}</div>` : ''}</div>`;
+  `<div class="glass kpi"><div class="label">${label}</div><div class="value"${rawAttr(value)}>${value}</div>${delta ? `<div class="delta ${cls}">${delta}</div>` : ''}</div>`;
 const table = (head, rows, hl) =>
   `<div class="table-wrap"><table><thead><tr>${head.map((h) => `<th>${h}</th>`).join('')}</tr></thead><tbody>${rows
-    .map((r, ri) => `<tr>${r.map((c, ci) => `<td class="${hl && hl(ri, ci) ? 'hl' : ''}">${c}</td>`).join('')}</tr>`)
+    .map((r, ri) => `<tr>${r.map((c, ci) => `<td class="${hl && hl(ri, ci) ? 'hl' : ''}"${rawAttr(c)}>${c}</td>`).join('')}</tr>`)
     .join('')}</tbody></table></div>`;
 const list = (s) => String(s).split(/[,;\s]+/).map(parseNum).filter((v) => v != null);
 const median = (a) => { const s = [...a].sort((x, y) => x - y), m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
@@ -205,7 +210,7 @@ function makeChart(id, config) {
   charts[id]?.destroy();
   charts[id] = new Chart(el, config);
 }
-const moneyAxis = { ticks: { callback: (v) => fmt(v) } };
+const moneyAxis = { ticks: { callback: (v) => String(fmt(v)) } };
 const ds = (label, data, color, extra = {}) => ({ label, data, borderColor: color, backgroundColor: color + 'cc', borderRadius: 6, tension: 0.35, ...extra });
 
 /* ---------- Storage ---------- */
@@ -239,6 +244,7 @@ function applyRows(rows, company) {
     return;
   }
   state = { company: company || $('#companyName').value.trim() || 'My Company', years: parsed.years, items: derive(parsed.items) };
+  dash = { from: 0, to: null, metric: 'revenue' };
   save();
   const found = Object.keys(parsed.items).length;
   msg(`Loaded ${found} line items across ${parsed.years.length} periods.${S('revenue') ? '' : ' Note: no Revenue row found, so most models will use default values.'}`);
@@ -273,44 +279,104 @@ function renderPreview() {
     Object.keys(LABELS).filter((k) => S(k)).map((k) => [LABELS[k], ...S(k).map((v) => fmt(v))]));
 }
 
-/* ---------- Dashboard ---------- */
+/* ---------- Dashboard (Power BI style) ---------- */
+let dash = { from: 0, to: null, metric: 'revenue' };
+
 function renderDashboard() {
   const on = hasData();
   $('#dashEmpty').hidden = on;
   $('#dashContent').hidden = !on;
+  $('#dlPowerBI').hidden = !on;
   $('#companyPill').textContent = on ? state.company : 'No data loaded';
   if (!on) return;
-  const rev = S('revenue'), n = rev.length;
-  const growth = n > 1 && rev[n - 2] ? rev[n - 1] / rev[n - 2] - 1 : null;
-  const em = L('ebitda') / L('revenue'), nm = L('netIncome') / L('revenue');
-  const d = (g) => (g == null ? '' : `${g >= 0 ? '▲' : '▼'} ${pct(Math.abs(g))} vs prior year`);
+
+  const n = state.years.length;
+  if (dash.to == null || dash.to >= n) dash.to = n - 1;
+  if (dash.from > dash.to) dash.from = 0;
+  if (!S(dash.metric)) dash.metric = 'revenue';
+  const yearOpts = (sel) => state.years.map((y, i) => `<option value="${i}"${i === sel ? ' selected' : ''}>${esc(y)}</option>`).join('');
+  $('#slFrom').innerHTML = yearOpts(dash.from);
+  $('#slTo').innerHTML = yearOpts(dash.to);
+  $('#slMetric').innerHTML = Object.keys(LABELS).filter((k) => S(k)).map((k) => `<option value="${k}"${k === dash.metric ? ' selected' : ''}>${LABELS[k]}</option>`).join('');
+
+  const b = dash.from, e = dash.to;
+  const idx = Array.from({ length: e - b + 1 }, (_, i) => b + i);
+  const years = idx.map((i) => state.years[i]);
+  const at = (k, i) => S(k)?.[i] ?? null;
+  const sl = (k) => (S(k) ? idx.map((i) => S(k)[i]) : []);
+  const yoy = (k, i) => (i > 0 && at(k, i - 1) ? at(k, i) / at(k, i - 1) - 1 : null);
+  const ye = esc(state.years[e]);
+
+  const g = yoy('revenue', e);
+  const span = `${esc(state.years[b])}–${ye}`;
+  const netDebt = at('debt', e) != null ? at('debt', e) - (at('cash', e) || 0) : null;
   $('#kpis').innerHTML = [
-    kpi('Revenue', fmt(L('revenue')), d(growth), growth >= 0 ? 'up' : 'down'),
-    kpi('EBITDA', fmt(L('ebitda')), `${pct(em)} margin`),
-    kpi('Net Income', fmt(L('netIncome')), `${pct(nm)} margin`),
-    kpi('Cash', fmt(L('cash'))),
-    kpi('Revenue CAGR', pct(cagr(rev)), `${state.years[0]}–${state.years[n - 1]}`),
+    kpi(`Revenue ${ye}`, fmt(at('revenue', e)), g == null ? '' : `${g >= 0 ? '▲' : '▼'} ${pct(Math.abs(g))} vs prior year`, g >= 0 ? 'up' : 'down'),
+    kpi('EBITDA', fmt(at('ebitda', e)), `${pct(at('ebitda', e) / at('revenue', e))} margin`),
+    kpi('Net Income', fmt(at('netIncome', e)), `${pct(at('netIncome', e) / at('revenue', e))} margin`),
+    netDebt != null && netDebt < 0
+      ? kpi('Net cash', fmt(-netDebt), 'More cash than debt', 'up')
+      : kpi('Net debt', fmt(netDebt), netDebt != null && at('ebitda', e) ? `${xf(netDebt / at('ebitda', e))} EBITDA` : ''),
+    kpi('Revenue CAGR', pct(cagr(sl('revenue'))), span),
   ].join('');
 
+  // Trend: selected metric (columns) + YoY growth (line); click a column to focus that year
+  $('#trendTitle').textContent = `${LABELS[dash.metric]} trend, ${state.years[b]}–${state.years[e]}`;
   makeChart('chTrend', {
-    type: 'bar',
-    data: { labels: state.years, datasets: [ds('Revenue', rev, COLORS.blue), ds('EBITDA', S('ebitda') || [], COLORS.green), ds('Net Income', S('netIncome') || [], COLORS.purple)] },
-    options: { scales: { y: moneyAxis } },
+    data: { labels: years, datasets: [
+      ds(LABELS[dash.metric], sl(dash.metric), COLORS.blue, { type: 'bar', yAxisID: 'y', order: 2 }),
+      ds('YoY growth %', idx.map((i) => (yoy(dash.metric, i) == null ? null : +(yoy(dash.metric, i) * 100).toFixed(1))), COLORS.orange, { type: 'line', yAxisID: 'y1', order: 1 }),
+    ] },
+    options: {
+      scales: { y: moneyAxis, y1: { position: 'right', grid: { display: false }, ticks: { callback: (v) => v + '%' } } },
+      onClick: (_, els) => { if (els.length) { dash.to = idx[els[0].index]; renderDashboard(); } },
+    },
   });
-  const m = (k) => (S(k) ? op(S(k), rev, (a, b) => (b ? (a / b) * 100 : null)) : []);
+
+  const m = (k) => (S(k) ? idx.map((i) => (at(k, i) != null && at('revenue', i) ? +((at(k, i) / at('revenue', i)) * 100).toFixed(2) : null)) : []);
   makeChart('chMargin', {
     type: 'line',
-    data: { labels: state.years, datasets: [ds('Gross', m('grossProfit'), COLORS.blue), ds('EBITDA', m('ebitda'), COLORS.green), ds('Net', m('netIncome'), COLORS.purple)] },
+    data: { labels: years, datasets: [ds('Gross', m('grossProfit'), COLORS.blue), ds('EBITDA', m('ebitda'), COLORS.green), ds('Net', m('netIncome'), COLORS.purple)] },
     options: { scales: { y: { ticks: { callback: (v) => v + '%' } } } },
   });
-  const bs = [['Equity', L('equity'), COLORS.green], ['Debt', L('debt'), COLORS.orange], ['Other liabilities', L('totalLiabilities') != null && L('debt') != null ? L('totalLiabilities') - L('debt') : L('totalLiabilities'), COLORS.purple]].filter((x) => x[1] > 0);
+
+  // Profit bridge (waterfall) for the focus year: revenue down to net income
+  $('#bridgeTitle').textContent = `Profit bridge, ${state.years[e]}`;
+  const rev = at('revenue', e), ni = at('netIncome', e);
+  if (rev != null && ni != null) {
+    const abs = (k) => Math.abs(at(k, e) || 0);
+    const cogs = abs('cogs'), da = abs('da'), int = abs('interest');
+    const opex = at('opex', e) != null ? abs('opex') : at('ebitda', e) != null ? rev - cogs - at('ebitda', e) : 0;
+    const steps = [['Revenue', rev, 'total'], ['COGS', -cogs], ['Opex', -opex], ['D&A', -da], ['Interest', -int], ['Tax & other', -(rev - cogs - opex - da - int - ni)], ['Net income', ni, 'total']];
+    let run = 0;
+    const bars = steps.map(([, v, t]) => { if (t) { run = v; return [0, v]; } const r = [run, run + v]; run += v; return r; });
+    makeChart('chBridge', {
+      type: 'bar',
+      data: { labels: steps.map((s) => s[0]), datasets: [{ label: 'Amount', data: bars, borderRadius: 6,
+        backgroundColor: steps.map(([, v, t]) => (t ? COLORS.blue : v < 0 ? COLORS.red : COLORS.green) + 'cc') }] },
+      options: { plugins: { legend: { display: false }, tooltip: { callbacks: { label: (c) => String(fmt(steps[c.dataIndex][1])) } } }, scales: { y: moneyAxis } },
+    });
+  }
+
+  $('#balanceTitle').textContent = `Balance sheet, ${state.years[e]}`;
+  const tl = at('totalLiabilities', e), debt = at('debt', e);
+  const bs = [['Equity', at('equity', e), COLORS.green], ['Debt', debt, COLORS.orange], ['Other liabilities', tl != null && debt != null ? tl - debt : tl, COLORS.purple]].filter((x) => x[1] > 0);
   makeChart('chBalance', {
     type: 'doughnut',
     data: { labels: bs.map((x) => x[0]), datasets: [{ data: bs.map((x) => x[1]), backgroundColor: bs.map((x) => x[2]), borderWidth: 0 }] },
     options: { cutout: '65%', plugins: { legend: { position: 'right' } } },
   });
-  const r = ratios().at(-1);
-  $('#dashRatios').innerHTML = table(['Ratio', 'Value'], r.map(([k, v]) => [k, v]));
+
+  // Matrix: every line item for the selected years, with change over the period
+  $('#dashMatrix').innerHTML = table(['Line item', ...years.map(esc), `Change ${span}`],
+    Object.keys(LABELS).filter((k) => S(k)).map((k) => {
+      const s = at(k, b), f = at(k, e);
+      return [LABELS[k], ...sl(k).map((v) => fmt(v)), s ? pct(f / s - 1) : '—'];
+    }));
+
+  $('#ratiosTitle').textContent = `Key ratios, ${state.years[b]} vs ${state.years[e]}`;
+  const all = ratios();
+  $('#dashRatios').innerHTML = table(['Ratio', esc(state.years[b]), ye], all[e].map(([k, v], i) => [k, all[b][i][1], v]));
 }
 
 function ratios() {
@@ -334,48 +400,70 @@ function ratios() {
   });
 }
 
-/* ---------- Weather (Open-Meteo) ---------- */
-const WMO = { 0: 'Clear', 1: 'Mainly clear', 2: 'Partly cloudy', 3: 'Overcast', 45: 'Fog', 48: 'Fog', 51: 'Drizzle', 53: 'Drizzle', 55: 'Drizzle', 61: 'Rain', 63: 'Rain', 65: 'Heavy rain', 71: 'Snow', 73: 'Snow', 75: 'Heavy snow', 80: 'Showers', 81: 'Showers', 82: 'Heavy showers', 95: 'Thunderstorm', 96: 'Thunderstorm', 99: 'Thunderstorm' };
+/* ---------- Excel & Power BI export ---------- */
+const slug = (s) => String(s || 'model').replace(/[^a-z0-9]+/gi, '-').replace(/^-|-$/g, '').toLowerCase();
+const cellOf = (el) => (el.dataset.v != null && el.dataset.v !== '' ? { t: 'n', v: +el.dataset.v, z: el.dataset.z || 'General' } : el.textContent.trim());
 
-async function geocode(city) {
-  const r = await fetch(`https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(city)}&count=1&language=en&format=json`);
-  const j = await r.json();
-  if (!j.results?.length) throw new Error(`Location "${city}" not found`);
-  const p = j.results[0];
-  return { lat: p.latitude, lon: p.longitude, name: [p.name, p.admin1, p.country].filter(Boolean).join(', ') };
+function dataSheet() {
+  return XLSX.utils.aoa_to_sheet([['Line item', ...state.years], ...Object.keys(LABELS).filter((k) => S(k)).map((k) => [LABELS[k], ...S(k)])]);
 }
 
-async function loadWeather(city) {
-  const out = $('#weatherOut');
-  out.innerHTML = '<p class="muted">Loading…</p>';
-  try {
-    const g = await geocode(city);
-    const r = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${g.lat}&longitude=${g.lon}&current=temperature_2m,weather_code,wind_speed_10m&daily=temperature_2m_max,temperature_2m_min,precipitation_sum,wind_speed_10m_max&timezone=auto&forecast_days=7`);
-    const w = await r.json();
-    const dl = w.daily;
-    const rainDays = dl.precipitation_sum.filter((p) => p >= 10).length;
-    const hot = Math.max(...dl.temperature_2m_max), windy = Math.max(...dl.wind_speed_10m_max);
-    const alerts = [rainDays && `${rainDays} heavy-rain day(s)`, hot >= 35 && `heat up to ${hot}°C`, windy >= 50 && `wind up to ${windy} km/h`].filter(Boolean);
-    out.innerHTML = `<div class="kpis">${[
-      kpi(esc(g.name), `${w.current.temperature_2m}°C`, WMO[w.current.weather_code] || ''),
-      kpi('7-day rain total', `${dl.precipitation_sum.reduce((a, b) => a + b, 0).toFixed(1)} mm`),
-      kpi('Max wind', `${windy} km/h`),
-      kpi('Business risk', alerts.length ? 'Watch' : 'Low', alerts.join(', ') || 'No severe weather expected', alerts.length ? 'down' : 'up'),
-    ].join('')}</div>`;
-    makeChart('chWeather', {
-      data: {
-        labels: dl.time.map((t) => new Date(t + 'T00:00').toLocaleDateString(undefined, { weekday: 'short' })),
-        datasets: [
-          ds('Max °C', dl.temperature_2m_max, COLORS.orange, { type: 'line', yAxisID: 'y' }),
-          ds('Min °C', dl.temperature_2m_min, COLORS.teal, { type: 'line', yAxisID: 'y' }),
-          ds('Rain mm', dl.precipitation_sum, COLORS.blue, { type: 'bar', yAxisID: 'y1' }),
-        ],
-      },
-      options: { scales: { y: { position: 'left' }, y1: { position: 'right', grid: { display: false } } } },
-    });
-  } catch (e) {
-    out.innerHTML = `<p style="color:var(--red)">Weather unavailable: ${esc(e.message)}</p>`;
+// Builds a workbook from what is on screen: inputs, KPI tiles and every results table
+function exportXlsx(container, inputs, title, filename) {
+  if (!window.XLSX) return alert('The Excel library failed to load. Please check your internet connection.');
+  const aoa = [[title], [hasData() ? state.company : '', `Generated ${new Date().toLocaleDateString()}`], []];
+  if (inputs.length) {
+    aoa.push(['Inputs', 'Value']);
+    inputs.forEach(([l, v]) => aoa.push([l, v]));
+    aoa.push([]);
   }
+  const tiles = container.querySelectorAll('.kpi');
+  if (tiles.length) {
+    aoa.push(['Key results', 'Value', 'Note']);
+    tiles.forEach((k) => aoa.push([k.querySelector('.label').textContent, cellOf(k.querySelector('.value')), k.querySelector('.delta')?.textContent || '']));
+    aoa.push([]);
+  }
+  container.querySelectorAll('.card').forEach((card) => {
+    const t = card.querySelector('table');
+    if (!t) return;
+    aoa.push([card.querySelector('h3')?.textContent || 'Table']);
+    t.querySelectorAll('tr').forEach((tr) => aoa.push([...tr.children].map(cellOf)));
+    aoa.push([]);
+  });
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  ws['!cols'] = [{ wch: 36 }, ...Array(12).fill({ wch: 16 })];
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Model');
+  if (hasData()) XLSX.utils.book_append_sheet(wb, dataSheet(), 'Source data');
+  XLSX.writeFile(wb, filename);
+}
+
+const CATEGORY = { revenue: 'Income Statement', cogs: 'Income Statement', grossProfit: 'Income Statement', opex: 'Income Statement', ebitda: 'Income Statement', da: 'Income Statement', ebit: 'Income Statement', interest: 'Income Statement', netIncome: 'Income Statement', capex: 'Cash Flow', ocf: 'Cash Flow' };
+
+// Tidy (long) tables are the shape Power BI works with best: one row per company / year / metric
+function exportPowerBI() {
+  if (!window.XLSX) return alert('The Excel library failed to load. Please check your internet connection.');
+  const yearNum = (y) => parseInt(String(y).match(/(19|20)\d{2}/)?.[0]) || String(y);
+  const fact = [['Company', 'Year', 'Category', 'Metric', 'Value']];
+  Object.keys(LABELS).filter((k) => S(k)).forEach((k) => S(k).forEach((v, i) => {
+    if (v != null) fact.push([state.company, yearNum(state.years[i]), CATEGORY[k] || 'Balance Sheet', LABELS[k], v]);
+  }));
+  const rat = [['Company', 'Year', 'Ratio', 'Value', 'Format']];
+  ratios().forEach((rows, i) => rows.forEach(([name, v]) => {
+    if (v && v.raw != null) rat.push([state.company, yearNum(state.years[i]), name, v.raw, v.z.includes('%') ? 'Percent' : 'Multiple']);
+  }));
+  const readme = [
+    ['How to use this file in Power BI Desktop'],
+    ['1. Home > Get data > Excel workbook, and choose this file.'],
+    ['2. Tick FactFinancials and Ratios, then click Load.'],
+    ['3. Build visuals: put Year on the X-axis, Value in Values, and Metric (or Ratio) in Legend or a slicer.'],
+    ['4. Format the Ratios Value column as a percentage where Format = Percent.'],
+  ];
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(fact), 'FactFinancials');
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(rat), 'Ratios');
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(readme), 'README');
+  XLSX.writeFile(wb, `${slug(state.company)}-powerbi-dataset.xlsx`);
 }
 
 /* ---------- Models ---------- */
@@ -417,7 +505,7 @@ function dcfCore(v) {
 
 const MODELS = [
   {
-    id: 'dcf', name: 'DCF Valuation', goals: ['valuation', 'acquisition'],
+    id: 'dcf', name: 'DCF Valuation', group: 'Valuation',
     desc: 'Discounted cash flow: projects free cash flow, then discounts it back at WACC to find what the business is worth today.',
     inputs: (d) => [['rev', 'Base revenue ($)', d.rev], ['g', 'Revenue growth %', d.g], ['m', 'EBITDA margin %', d.m], ['da', 'D&A % of revenue', d.da],
       ['capex', 'CapEx % of revenue', d.capex], ['nwc', 'Working capital % of new revenue', 10], ['tax', 'Tax rate %', 25], ['wacc', 'WACC %', 10],
@@ -442,7 +530,7 @@ const MODELS = [
     },
   },
   {
-    id: 'npv', name: 'NPV / IRR', goals: ['investment'],
+    id: 'npv', name: 'NPV / IRR', group: 'Projects & investments',
     desc: 'Checks whether an investment pays off. Enter the upfront cost and the expected cash flows for each year.',
     inputs: (d) => [['inv', 'Initial investment ($)', Math.round(d.ebitda * 2)], ['flows', 'Yearly cash flows (comma separated)', [1, 2, 3, 4, 5].map((y) => Math.round(d.ebitda * 0.5 * Math.pow(1.05, y))).join(', '), 'text'],
       ['rate', 'Discount rate %', 10], ['reinv', 'Reinvestment rate % (MIRR)', 8]],
@@ -460,7 +548,7 @@ const MODELS = [
     },
   },
   {
-    id: 'lbo', name: 'LBO', goals: ['acquisition'],
+    id: 'lbo', name: 'LBO', group: 'Deals & financing',
     desc: 'Leveraged buyout: buy the company mostly with debt, pay the debt down with cash flow, then sell. Shows the investor return.',
     inputs: (d) => [['ebitda', 'Entry EBITDA ($)', Math.round(d.ebitda)], ['entry', 'Entry multiple (x EBITDA)', 8], ['lev', 'Debt (x EBITDA)', 4.5], ['rate', 'Interest rate %', 8],
       ['g', 'EBITDA growth %', Math.max(3, d.g)], ['exit', 'Exit multiple (x EBITDA)', 8], ['years', 'Holding period (years)', 5], ['tax', 'Tax rate %', 25],
@@ -489,7 +577,7 @@ const MODELS = [
     },
   },
   {
-    id: 'wacc', name: 'WACC', goals: ['valuation', 'acquisition'],
+    id: 'wacc', name: 'WACC', group: 'Valuation',
     desc: 'Weighted average cost of capital: the blended return that lenders and shareholders expect. Use it as the discount rate in the DCF.',
     inputs: (d) => [['E', 'Equity value ($)', Math.round(d.equity)], ['D', 'Debt value ($)', Math.round(d.debt)], ['rf', 'Risk-free rate %', 4.2], ['beta', 'Beta', 1.1],
       ['mrp', 'Market risk premium %', 5.5], ['sp', 'Size / specific premium %', 1], ['kd', 'Pre-tax cost of debt %', d.interest], ['tax', 'Tax rate %', 25]],
@@ -504,7 +592,7 @@ const MODELS = [
     },
   },
   {
-    id: 'comps', name: 'Comparables', goals: ['valuation', 'acquisition'],
+    id: 'comps', name: 'Comparables', group: 'Valuation',
     desc: 'Values the company using the multiples that similar listed companies trade at. Enter peer multiples separated by commas.',
     inputs: (d) => [['rev', 'Company revenue ($)', Math.round(d.rev)], ['ebitda', 'Company EBITDA ($)', Math.round(d.ebitda)], ['ni', 'Company net income ($)', Math.round(d.ni)],
       ['netDebt', 'Net debt ($)', Math.round(d.netDebt)], ['evE', 'Peer EV/EBITDA', '7.5, 8.2, 9.0, 10.1, 11.4', 'text'], ['evS', 'Peer EV/Sales', '1.1, 1.4, 1.6, 1.9', 'text'], ['pe', 'Peer P/E', '14, 16.5, 18, 21', 'text']],
@@ -525,7 +613,7 @@ const MODELS = [
     },
   },
   {
-    id: 'montecarlo', name: 'Monte Carlo', goals: ['valuation', 'investment'],
+    id: 'montecarlo', name: 'Monte Carlo', group: 'Valuation',
     desc: 'Runs the DCF many times with random growth and margins to show the range of likely values, not just one number.',
     inputs: (d) => [['rev', 'Base revenue ($)', Math.round(d.rev)], ['g', 'Growth mean %', d.g], ['gsd', 'Growth std. dev. %', 3], ['m', 'Margin mean %', d.m], ['msd', 'Margin std. dev. %', 3],
       ['wacc', 'WACC %', 10], ['tg', 'Terminal growth %', 2.5], ['netDebt', 'Net debt ($)', Math.round(d.netDebt)], ['sims', 'Simulations', 2000]],
@@ -544,12 +632,12 @@ const MODELS = [
       return {
         html: `<div class="kpis">${kpi('P10 (downside)', fmt(q(0.1)))}${kpi('P50 (median)', fmt(q(0.5)))}${kpi('P90 (upside)', fmt(q(0.9)))}${kpi('Chance above base case', pct(out.filter((x) => x > base).length / out.length, 0), `Base EV ${fmt(base)}`)}</div>
         <div class="glass card"><h3>Distribution of enterprise value (${out.length} runs)</h3><div class="chart"><canvas id="mc1"></canvas></div></div>`,
-        charts: [['mc1', { type: 'bar', data: { labels: hist.map((_, i) => fmt(lo + w * (i + 0.5))), datasets: [ds('Simulations', hist, COLORS.teal, { barPercentage: 1, categoryPercentage: 1 })] }, options: { plugins: { legend: { display: false } } } }]],
+        charts: [['mc1', { type: 'bar', data: { labels: hist.map((_, i) => String(fmt(lo + w * (i + 0.5)))), datasets: [ds('Simulations', hist, COLORS.teal, { barPercentage: 1, categoryPercentage: 1 })] }, options: { plugins: { legend: { display: false } } } }]],
       };
     },
   },
   {
-    id: 'breakeven', name: 'Break-even', goals: ['investment', 'performance'],
+    id: 'breakeven', name: 'Break-even', group: 'Projects & investments',
     desc: 'How many units you must sell to cover all costs, and how much safety margin your sales plan has.',
     inputs: () => [['fixed', 'Fixed costs per year ($)', 500000], ['price', 'Price per unit ($)', 50], ['vc', 'Variable cost per unit ($)', 30], ['units', 'Expected units sold', 40000]],
     run(v) {
@@ -565,7 +653,7 @@ const MODELS = [
     },
   },
   {
-    id: 'ratios', name: 'Ratio Analysis', goals: ['performance'],
+    id: 'ratios', name: 'Ratio Analysis', group: 'Performance',
     desc: 'Profitability, liquidity, leverage and return ratios calculated from your uploaded statements for every year.',
     inputs: () => [],
     run() {
@@ -575,7 +663,7 @@ const MODELS = [
     },
   },
   {
-    id: 'forecast', name: '3-Statement Forecast', goals: ['performance', 'valuation'],
+    id: 'forecast', name: '3-Statement Forecast', group: 'Performance',
     desc: 'Projects the income statement forward from your history, with simple cash and debt roll-forward.',
     inputs: (d) => [['rev', 'Base revenue ($)', Math.round(d.rev)], ['g', 'Revenue growth %', d.g], ['gm', 'Gross margin %', hasData() && L('grossProfit') ? +((L('grossProfit') / L('revenue')) * 100).toFixed(1) : 40],
       ['opex', 'Operating expenses % of revenue', hasData() && L('opex') ? +((L('opex') / L('revenue')) * 100).toFixed(1) : 20], ['da', 'D&A % of revenue', d.da], ['capex', 'CapEx % of revenue', d.capex],
@@ -602,7 +690,7 @@ const MODELS = [
     },
   },
   {
-    id: 'loan', name: 'Loan Schedule', goals: ['investment'],
+    id: 'loan', name: 'Loan Schedule', group: 'Deals & financing',
     desc: 'Amortizing loan: monthly payment, total interest and the balance over time.',
     inputs: (d) => [['P', 'Loan amount ($)', Math.round(d.debt)], ['rate', 'Annual interest rate %', d.interest], ['years', 'Term (years)', 7], ['ppy', 'Payments per year', 12]],
     run(v) {
@@ -624,13 +712,19 @@ const MODELS = [
   },
 ];
 
-let currentModel = 'dcf', currentGoal = 'all';
+let currentModel = 'dcf';
 
-function renderModelTabs() {
-  const visible = MODELS.filter((m) => currentGoal === 'all' || m.goals.includes(currentGoal));
-  if (!visible.some((m) => m.id === currentModel)) currentModel = visible[0].id;
-  $('#modelTabs').innerHTML = visible.map((m) => `<button data-model="${m.id}" class="${m.id === currentModel ? 'on' : ''}">${m.name}</button>`).join('');
+function renderModelSelect() {
+  const groups = [...new Set(MODELS.map((m) => m.group))];
+  $('#modelSelect').innerHTML = groups.map((g) => `<optgroup label="${g}">${MODELS.filter((m) => m.group === g)
+    .map((m) => `<option value="${m.id}"${m.id === currentModel ? ' selected' : ''}>${m.name}</option>`).join('')}</optgroup>`).join('');
   renderModel();
+}
+
+function downloadModel() {
+  const m = MODELS.find((x) => x.id === currentModel);
+  const inputs = $$('#modelArea input').map((i) => [i.labels[0]?.textContent || i.dataset.k, i.type === 'text' ? i.value : parseFloat(i.value) || 0]);
+  exportXlsx($('#results'), inputs, m.name, `${slug(hasData() ? state.company : 'model')}-${m.id}.xlsx`);
 }
 
 function renderModel() {
@@ -651,7 +745,7 @@ function runModel() {
 }
 
 /* ---------- Feasibility report ---------- */
-const FEAS = [['name', 'Project name', 'New Store Expansion', 'text'], ['city', 'Location (city)', 'Miami', 'text'], ['inv', 'Initial investment ($)', 2_000_000], ['rev', 'Year-1 revenue ($)', 1_200_000],
+const FEAS = [['name', 'Project name', 'New Store Expansion', 'text'], ['inv', 'Initial investment ($)', 2_000_000], ['rev', 'Year-1 revenue ($)', 1_200_000],
   ['g', 'Revenue growth %', 6], ['var', 'Variable costs % of revenue', 45], ['fixed', 'Fixed costs per year ($)', 250_000], ['life', 'Project life (years)', 10],
   ['rate', 'Discount rate / hurdle %', 10], ['tax', 'Tax rate %', 25], ['salvage', 'Salvage value at end ($)', 200_000]];
 
@@ -668,65 +762,39 @@ function feasFlows(v, revMult = 1, costMult = 1) {
   return { flows, rows };
 }
 
-async function climateRisk(city) {
-  const g = await geocode(city);
-  const end = new Date(Date.now() - 7 * 864e5), start = new Date(end.getTime() - 364 * 864e5), iso = (d) => d.toISOString().slice(0, 10);
-  const r = await fetch(`https://archive-api.open-meteo.com/v1/archive?latitude=${g.lat}&longitude=${g.lon}&start_date=${iso(start)}&end_date=${iso(end)}&daily=temperature_2m_max,temperature_2m_min,precipitation_sum,wind_speed_10m_max&timezone=auto`);
-  const j = await r.json();
-  if (!j.daily) throw new Error(j.reason || 'No climate data');
-  const dl = j.daily, cnt = (arr, f) => arr.filter((x) => x != null && f(x)).length;
-  const heat = cnt(dl.temperature_2m_max, (x) => x >= 35), freeze = cnt(dl.temperature_2m_min, (x) => x <= 0);
-  const rain = cnt(dl.precipitation_sum, (x) => x >= 20), wind = cnt(dl.wind_speed_10m_max, (x) => x >= 50);
-  const score = Math.min(100, Math.round(heat * 0.5 + freeze * 0.3 + rain * 1.5 + wind * 1.5));
-  const months = {};
-  dl.time.forEach((t, i) => {
-    const k = t.slice(0, 7);
-    months[k] ??= { p: 0, t: 0, n: 0 };
-    months[k].p += dl.precipitation_sum[i] || 0;
-    months[k].t += ((dl.temperature_2m_max[i] ?? 0) + (dl.temperature_2m_min[i] ?? 0)) / 2;
-    months[k].n++;
-  });
-  return { place: g.name, heat, freeze, rain, wind, score, level: score < 20 ? 'Low' : score < 45 ? 'Moderate' : 'High', months, totalRain: dl.precipitation_sum.reduce((a, b) => a + (b || 0), 0), period: `${iso(start)} to ${iso(end)}` };
-}
-
-async function generateReport() {
+function generateReport() {
   const v = {};
   FEAS.forEach(([k, , , t]) => { const val = $(`#f-${k}`).value; v[k] = t === 'text' ? val.trim() : parseFloat(val) || 0; });
   v.life = Math.max(1, Math.round(v.life));
   const out = $('#report');
-  out.innerHTML = '<div class="glass card"><p class="muted">Building report and fetching climate data…</p></div>';
   const r = v.rate / 100, { flows, rows } = feasFlows(v);
   const n = npv(r, flows), i = irr(flows), pb = payback(flows), dpb = payback(flows, r), pi = npv(r, [0, ...flows.slice(1)]) / v.inv;
   const beRev = v.fixed / (1 - v.var / 100);
-  const sens = [['Revenue −20%', 0.8, 1], ['Revenue −10%', 0.9, 1], ['Base case', 1, 1], ['Revenue +10%', 1.1, 1], ['Costs +10%', 1, 1.1]].map(([lab, rm, cm]) => {
-    const f = feasFlows(v, rm, cm).flows; return [lab, fmt(npv(r, f)), pct(irr(f)), yrs(payback(f))];
+  const sensRaw = [['Revenue −20%', 0.8, 1], ['Revenue −10%', 0.9, 1], ['Base case', 1, 1], ['Revenue +10%', 1.1, 1], ['Costs +10%', 1, 1.1]].map(([lab, rm, cm]) => {
+    const f = feasFlows(v, rm, cm).flows; return { lab, npv: npv(r, f), irr: irr(f), pb: payback(f) };
   });
-
-  let climate = null, climateErr = '';
-  try { climate = await climateRisk(v.city); } catch (e) { climateErr = e.message; }
+  const sens = sensRaw.map((x) => [x.lab, fmt(x.npv), pct(x.irr), yrs(x.pb)]);
 
   const checks = [
     [n > 0, `NPV is ${fmt(n)} at a ${v.rate}% hurdle rate`],
     [i != null && i > r, `IRR of ${pct(i)} ${i != null && i > r ? 'beats' : 'is below'} the ${v.rate}% hurdle`],
     [pb != null && pb <= v.life * 0.6, `Payback in ${yrs(pb)} out of a ${v.life}-year life`],
-    [!climate || climate.level !== 'High', climate ? `Climate risk at ${esc(climate.place)} is ${climate.level}` : 'Climate risk not assessed'],
+    [sensRaw[1].npv > 0, `NPV ${sensRaw[1].npv > 0 ? 'stays positive' : 'turns negative'} if revenue is 10% below plan`],
   ];
   const passed = checks.filter((c) => c[0]).length;
   const [cls, title] = n <= 0 ? ['bad', 'Not feasible'] : passed === 4 ? ['good', 'Feasible'] : ['mid', 'Feasible with conditions'];
 
   const recs = [];
   if (n <= 0) recs.push('Re-scope the project: reduce the upfront investment or fixed costs, or find ways to raise prices.');
-  if (sens[0][1].startsWith('-')) recs.push('The project loses value if revenue comes in 20% below plan. Validate demand (pilot, pre-orders, market study) before committing.');
+  if (sensRaw[0].npv < 0) recs.push('The project loses value if revenue comes in 20% below plan. Validate demand (pilot, pre-orders, market study) before committing.');
   if (pb == null || pb > v.life * 0.6) recs.push('Payback is slow. Consider phasing the investment or leasing assets instead of buying them.');
-  if (climate?.level === 'High') recs.push('Weather is a material risk at this location. Budget for insurance, backup power and supply-chain buffers.');
-  else if (climate?.level === 'Moderate') recs.push('Some severe-weather days occur at this location. Review insurance coverage and business continuity plans.');
+  if (sensRaw[4].npv < 0) recs.push('A 10% rise in costs wipes out the value. Lock in supplier prices or build in a cost contingency.');
   if (v.var >= 60) recs.push('Variable costs are high relative to revenue. Negotiate supplier terms to widen the contribution margin.');
   if (!recs.length) recs.push('Proceed to detailed planning. Track actual revenue against the base case each quarter.');
 
-  const mk = climate ? Object.keys(climate.months) : [];
   out.innerHTML = `<div class="glass card report">
     <h2>${esc(v.name)}: Feasibility Report</h2>
-    <p class="muted small">${esc(v.city)} · Prepared ${new Date().toLocaleDateString()}${hasData() ? ` · Company: ${esc(state.company)}` : ''}</p>
+    <p class="muted small">Prepared ${new Date().toLocaleDateString()}${hasData() ? ` · Company: ${esc(state.company)}` : ''}</p>
     <div class="verdict ${cls}"><strong>${title}</strong>${passed} of 4 checks passed.</div>
     <h3>Executive summary</h3>
     <ul>${checks.map(([ok, t]) => `<li>${ok ? '✅' : '⚠️'} ${t}</li>`).join('')}</ul>
@@ -735,23 +803,18 @@ async function generateReport() {
   <div class="glass card"><h3>Projected cash flows</h3><div class="chart"><canvas id="fc1"></canvas></div>
     ${table(['Year', 'Revenue', 'EBITDA', 'Tax', 'Cash flow'], [[0, '—', '—', '—', fmt(-v.inv)], ...rows.map((x) => [x[0], fmt(x[1]), fmt(x[2]), fmt(x[3]), fmt(x[4])])])}</div>
   <div class="glass card"><h3>Sensitivity analysis</h3>${table(['Scenario', 'NPV', 'IRR', 'Payback'], sens, (ri) => ri === 2)}</div>
-  <div class="glass card"><h3>Climate &amp; weather risk <span class="tag">Open-Meteo</span></h3>
-    ${climate ? `<p class="muted small">${esc(climate.place)} · last 12 months (${climate.period})</p>
-    <div class="kpis">${kpi('Climate risk score', `${climate.score}/100`, climate.level, climate.level === 'Low' ? 'up' : 'down')}${kpi('Heavy rain days (≥20 mm)', climate.rain)}${kpi('Extreme heat days (≥35°C)', climate.heat)}${kpi('Freezing days', climate.freeze)}${kpi('High wind days (≥50 km/h)', climate.wind)}${kpi('Annual rainfall', `${climate.totalRain.toFixed(0)} mm`)}</div>
-    <div class="chart" style="margin-top:14px"><canvas id="fc2"></canvas></div>` : `<p style="color:var(--red)">Climate data unavailable: ${esc(climateErr)}</p>`}
-  </div>
   <div class="glass card report"><h3>Recommendations</h3><ul>${recs.map((x) => `<li>${x}</li>`).join('')}</ul>
-    <p class="muted small">This report is based on the assumptions entered and historical weather data. It is a planning tool, not financial advice.</p></div>`;
+    <p class="muted small">This report is based on the assumptions entered. It is a planning tool, not financial advice.</p></div>`;
 
   let cum = 0;
   makeChart('fc1', { data: { labels: flows.map((_, t) => `Y${t}`), datasets: [ds('Cash flow', flows, COLORS.blue, { type: 'bar' }), ds('Cumulative', flows.map((f) => (cum += f)), COLORS.green, { type: 'line' })] }, options: { scales: { y: moneyAxis } } });
-  if (climate) makeChart('fc2', {
-    data: { labels: mk.map((k) => new Date(k + '-01T00:00').toLocaleDateString(undefined, { month: 'short', year: '2-digit' })), datasets: [
-      ds('Rain (mm)', mk.map((k) => +climate.months[k].p.toFixed(1)), COLORS.blue, { type: 'bar', yAxisID: 'y' }),
-      ds('Avg temp (°C)', mk.map((k) => +(climate.months[k].t / climate.months[k].n).toFixed(1)), COLORS.orange, { type: 'line', yAxisID: 'y1' })] },
-    options: { scales: { y: { position: 'left' }, y1: { position: 'right', grid: { display: false } } } },
-  });
   $('#printReport').hidden = false;
+  $('#dlReport').hidden = false;
+}
+
+function downloadReport() {
+  const inputs = FEAS.map(([k, label, , t]) => [label, t === 'text' ? $(`#f-${k}`).value : parseFloat($(`#f-${k}`).value) || 0]);
+  exportXlsx($('#report'), inputs, `${$('#f-name').value || 'Project'}: Feasibility Report`, `${slug($('#f-name').value)}-feasibility.xlsx`);
 }
 
 /* ---------- Routing & init ---------- */
@@ -761,7 +824,7 @@ function route() {
   $$('.view').forEach((v) => v.classList.toggle('active', v.id === `view-${valid}`));
   $$('nav a').forEach((a) => a.classList.toggle('active', a.dataset.view === valid));
   if (valid === 'dashboard') renderDashboard();
-  if (valid === 'models') renderModelTabs();
+  if (valid === 'models') renderModelSelect();
   if (valid === 'upload') renderPreview();
 }
 function refreshAll() { $('#companyPill').textContent = hasData() ? state.company : 'No data loaded'; route(); }
@@ -791,29 +854,28 @@ function init() {
     refreshAll();
   });
 
-  $('#goalChips').addEventListener('click', (e) => {
-    const b = e.target.closest('button'); if (!b) return;
-    currentGoal = b.dataset.goal;
-    $$('#goalChips button').forEach((x) => x.classList.toggle('on', x === b));
-    renderModelTabs();
-  });
-  $('#modelTabs').addEventListener('click', (e) => {
-    const b = e.target.closest('button'); if (!b) return;
-    currentModel = b.dataset.model;
-    renderModelTabs();
-  });
+  $('#modelSelect').addEventListener('change', (e) => { currentModel = e.target.value; renderModel(); });
+  $('#dlModel').addEventListener('click', downloadModel);
+
+  ['slFrom', 'slTo', 'slMetric'].forEach((id) => $('#' + id).addEventListener('change', () => {
+    dash.from = +$('#slFrom').value;
+    dash.to = +$('#slTo').value;
+    dash.metric = $('#slMetric').value;
+    if (dash.from > dash.to) [dash.from, dash.to] = [dash.to, dash.from];
+    renderDashboard();
+  }));
+  $('#slReset').addEventListener('click', () => { dash = { from: 0, to: null, metric: 'revenue' }; renderDashboard(); });
+  $('#dlPowerBI').addEventListener('click', exportPowerBI);
 
   $('#feasForm').innerHTML = FEAS.map(([k, label, val, t]) =>
     `<div class="field"><label for="f-${k}">${label}</label><input id="f-${k}" ${t === 'text' ? 'type="text"' : 'type="number" step="any"'} value="${esc(val)}"></div>`).join('');
   $('#genReport').addEventListener('click', generateReport);
   $('#printReport').addEventListener('click', () => window.print());
-
-  $('#weatherForm').addEventListener('submit', (e) => { e.preventDefault(); loadWeather($('#weatherCity').value.trim() || 'Miami'); });
+  $('#dlReport').addEventListener('click', downloadReport);
 
   matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => { themeCharts(); route(); });
   window.addEventListener('hashchange', route);
   route();
-  loadWeather('Miami');
 }
 
 document.addEventListener('DOMContentLoaded', init);
