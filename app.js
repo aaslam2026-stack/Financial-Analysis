@@ -491,42 +491,6 @@ function ratios() {
 
 /* ---------- Excel & Power BI export ---------- */
 const slug = (s) => String(s || 'model').replace(/[^a-z0-9]+/gi, '-').replace(/^-|-$/g, '').toLowerCase();
-const cellOf = (el) => (el.dataset.v != null && el.dataset.v !== '' ? { t: 'n', v: +el.dataset.v, z: el.dataset.z || 'General' } : el.textContent.trim());
-
-function dataSheet() {
-  return XLSX.utils.aoa_to_sheet([['Line item', ...state.years], ...Object.keys(LABELS).filter((k) => S(k)).map((k) => [LABELS[k], ...S(k)])]);
-}
-
-// Builds a workbook from what is on screen: inputs, KPI tiles and every results table
-function exportXlsx(container, inputs, title, filename) {
-  if (!window.XLSX) return alert('The Excel library failed to load. Please check your internet connection.');
-  const aoa = [[title], [hasData() ? state.company : '', `Generated ${new Date().toLocaleDateString()}`], []];
-  if (inputs.length) {
-    aoa.push(['Inputs', 'Value']);
-    inputs.forEach(([l, v]) => aoa.push([l, v]));
-    aoa.push([]);
-  }
-  const tiles = container.querySelectorAll('.kpi');
-  if (tiles.length) {
-    aoa.push(['Key results', 'Value', 'Note']);
-    tiles.forEach((k) => aoa.push([k.querySelector('.label').textContent, cellOf(k.querySelector('.value')), k.querySelector('.delta')?.textContent || '']));
-    aoa.push([]);
-  }
-  container.querySelectorAll('.card').forEach((card) => {
-    const t = card.querySelector('table');
-    if (!t) return;
-    aoa.push([card.querySelector('h3')?.textContent || 'Table']);
-    t.querySelectorAll('tr').forEach((tr) => aoa.push([...tr.children].map(cellOf)));
-    aoa.push([]);
-  });
-  const ws = XLSX.utils.aoa_to_sheet(aoa);
-  ws['!cols'] = [{ wch: 36 }, ...Array(12).fill({ wch: 16 })];
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, 'Model');
-  if (hasData()) XLSX.utils.book_append_sheet(wb, dataSheet(), 'Source data');
-  XLSX.writeFile(wb, filename);
-}
-
 const CATEGORY = { revenue: 'Income Statement', cogs: 'Income Statement', grossProfit: 'Income Statement', opex: 'Income Statement', ebitda: 'Income Statement', da: 'Income Statement', ebit: 'Income Statement', interest: 'Income Statement', netIncome: 'Income Statement', capex: 'Cash Flow', ocf: 'Cash Flow' };
 
 // Tidy (long) tables are the shape Power BI works with best: one row per company / year / metric
@@ -590,6 +554,22 @@ function dcfCore(v) {
   if (w <= tg) return { error: 'WACC must be higher than terminal growth.' };
   const tv = (fcf * (1 + tg)) / (w - tg), pvTv = tv / Math.pow(1 + w, v.years), ev = pv + pvTv;
   return { rows, pv, tv, pvTv, ev, equity: ev - v.netDebt, perShare: (ev - v.netDebt) / v.shares };
+}
+
+// Shared by the Monte Carlo model and its Excel sheet
+function monteCarlo(v, d) {
+  const n = Math.min(Math.max(100, v.sims), 20000), out = [];
+  for (let i = 0; i < n; i++) {
+    const r = dcfCore({ rev: v.rev, g: v.g + randn() * v.gsd, m: v.m + randn() * v.msd, da: d.da, capex: d.capex, nwc: 10, tax: 25, wacc: v.wacc, tg: v.tg, years: 5, netDebt: v.netDebt, shares: 1 });
+    if (!r.error) out.push(r.ev);
+  }
+  if (!out.length) return null;
+  out.sort((a, b) => a - b);
+  const q = (p) => out[Math.floor(p * (out.length - 1))];
+  const bins = 24, lo = q(0.01), hi = q(0.99), w = (hi - lo) / bins || 1, hist = Array(bins).fill(0);
+  out.forEach((x) => { const b = Math.floor((x - lo) / w); if (b >= 0 && b < bins) hist[b]++; });
+  const base = dcfCore({ ...v, da: d.da, capex: d.capex, nwc: 10, tax: 25, years: 5, shares: 1 }).ev;
+  return { out, q, hist, lo, w, base };
 }
 
 const MODELS = [
@@ -707,17 +687,9 @@ const MODELS = [
     inputs: (d) => [['rev', 'Base revenue ($)', Math.round(d.rev)], ['g', 'Growth mean %', d.g], ['gsd', 'Growth std. dev. %', 3], ['m', 'Margin mean %', d.m], ['msd', 'Margin std. dev. %', 3],
       ['wacc', 'WACC %', 10], ['tg', 'Terminal growth %', 2.5], ['netDebt', 'Net debt ($)', Math.round(d.netDebt)], ['sims', 'Simulations', 2000]],
     run(v, d) {
-      const n = Math.min(Math.max(100, v.sims), 20000), out = [];
-      for (let i = 0; i < n; i++) {
-        const r = dcfCore({ rev: v.rev, g: v.g + randn() * v.gsd, m: v.m + randn() * v.msd, da: d.da, capex: d.capex, nwc: 10, tax: 25, wacc: v.wacc, tg: v.tg, years: 5, netDebt: v.netDebt, shares: 1 });
-        if (!r.error) out.push(r.ev);
-      }
-      if (!out.length) return { html: '<div class="glass card">WACC must be higher than terminal growth.</div>' };
-      out.sort((a, b) => a - b);
-      const q = (p) => out[Math.floor(p * (out.length - 1))];
-      const bins = 24, lo = q(0.01), hi = q(0.99), w = (hi - lo) / bins || 1, hist = Array(bins).fill(0);
-      out.forEach((x) => { const b = Math.floor((x - lo) / w); if (b >= 0 && b < bins) hist[b]++; });
-      const base = dcfCore({ ...v, da: d.da, capex: d.capex, nwc: 10, tax: 25, years: 5, shares: 1 }).ev;
+      const mc = monteCarlo(v, d);
+      if (!mc) return { html: '<div class="glass card">WACC must be higher than terminal growth.</div>' };
+      const { out, q, hist, lo, w, base } = mc;
       return {
         html: `<div class="kpis">${kpi('P10 (downside)', fmt(q(0.1)))}${kpi('P50 (median)', fmt(q(0.5)))}${kpi('P90 (upside)', fmt(q(0.9)))}${kpi('Chance above base case', pct(out.filter((x) => x > base).length / out.length, 0), `Base EV ${fmt(base)}`)}</div>
         <div class="glass card"><h3>Distribution of enterprise value (${out.length} runs)</h3><div class="chart"><canvas id="mc1"></canvas></div></div>`,
@@ -803,10 +775,12 @@ const MODELS = [
 
 let currentModel = 'dcf';
 
-function downloadModel() {
-  const m = MODELS.find((x) => x.id === currentModel);
-  const inputs = $$('#modelArea input').map((i) => [i.labels[0]?.textContent || i.dataset.k, i.type === 'text' ? i.value : parseFloat(i.value) || 0]);
-  exportXlsx($('#results'), inputs, m.name, `${slug(hasData() ? state.company : 'model')}-${m.id}.xlsx`);
+async function downloadModel() {
+  const v = {};
+  $$('#modelArea input').forEach((i) => { v[i.dataset.k] = i.type === 'text' ? i.value : parseFloat(i.value) || 0; });
+  try {
+    await downloadModelWorkbook([currentModel], `${slug(hasData() ? state.company : 'model')}-${currentModel}.xlsx`, { [currentModel]: v });
+  } catch (e) { alert(e.message || e); }
 }
 
 function renderModel() {
@@ -844,19 +818,21 @@ function feasFlows(v, revMult = 1, costMult = 1) {
   return { flows, rows };
 }
 
-function generateReport() {
+function feasInputs() {
   const v = {};
   FEAS.forEach(([k, , , t]) => { const val = $(`#f-${k}`).value; v[k] = t === 'text' ? val.trim() : parseFloat(val) || 0; });
-  v.life = Math.max(1, Math.round(v.life));
-  const out = $('#report');
+  v.life = Math.min(40, Math.max(1, Math.round(v.life)));
+  return v;
+}
+
+// Shared by the on-screen report and the Excel workbook
+function feasAnalysis(v) {
   const r = v.rate / 100, { flows, rows } = feasFlows(v);
   const n = npv(r, flows), i = irr(flows), pb = payback(flows), dpb = payback(flows, r), pi = npv(r, [0, ...flows.slice(1)]) / v.inv;
   const beRev = v.fixed / (1 - v.var / 100);
   const sensRaw = [['Revenue −20%', 0.8, 1], ['Revenue −10%', 0.9, 1], ['Base case', 1, 1], ['Revenue +10%', 1.1, 1], ['Costs +10%', 1, 1.1]].map(([lab, rm, cm]) => {
     const f = feasFlows(v, rm, cm).flows; return { lab, npv: npv(r, f), irr: irr(f), pb: payback(f) };
   });
-  const sens = sensRaw.map((x) => [x.lab, fmt(x.npv), pct(x.irr), yrs(x.pb)]);
-
   const checks = [
     [n > 0, `NPV is ${fmt(n)} at a ${v.rate}% hurdle rate`],
     [i != null && i > r, `IRR of ${pct(i)} ${i != null && i > r ? 'beats' : 'is below'} the ${v.rate}% hurdle`],
@@ -865,7 +841,6 @@ function generateReport() {
   ];
   const passed = checks.filter((c) => c[0]).length;
   const [cls, title] = n <= 0 ? ['bad', 'Not feasible'] : passed === 4 ? ['good', 'Feasible'] : ['mid', 'Feasible with conditions'];
-
   const recs = [];
   if (n <= 0) recs.push('Re-scope the project: reduce the upfront investment or fixed costs, or find ways to raise prices.');
   if (sensRaw[0].npv < 0) recs.push('The project loses value if revenue comes in 20% below plan. Validate demand (pilot, pre-orders, market study) before committing.');
@@ -873,6 +848,13 @@ function generateReport() {
   if (sensRaw[4].npv < 0) recs.push('A 10% rise in costs wipes out the value. Lock in supplier prices or build in a cost contingency.');
   if (v.var >= 60) recs.push('Variable costs are high relative to revenue. Negotiate supplier terms to widen the contribution margin.');
   if (!recs.length) recs.push('Proceed to detailed planning. Track actual revenue against the base case each quarter.');
+  return { r, flows, rows, n, i, pb, dpb, pi, beRev, sensRaw, checks, passed, cls, title, recs };
+}
+
+function generateReport() {
+  const v = feasInputs(), out = $('#report');
+  const { flows, rows, n, i, pb, dpb, pi, beRev, sensRaw, checks, passed, cls, title, recs } = feasAnalysis(v);
+  const sens = sensRaw.map((x) => [x.lab, fmt(x.npv), pct(x.irr), yrs(x.pb)]);
 
   out.innerHTML = `<div class="glass card report">
     <h2>${esc(v.name)}: Feasibility Report</h2>
@@ -894,9 +876,10 @@ function generateReport() {
   $('#dlReport').hidden = false;
 }
 
-function downloadReport() {
-  const inputs = FEAS.map(([k, label, , t]) => [label, t === 'text' ? $(`#f-${k}`).value : parseFloat($(`#f-${k}`).value) || 0]);
-  exportXlsx($('#report'), inputs, `${$('#f-name').value || 'Project'}: Feasibility Report`, `${slug($('#f-name').value)}-feasibility.xlsx`);
+async function downloadReport() {
+  try {
+    await downloadModelWorkbook(['feasibility'], `${slug($('#f-name').value || 'project')}-feasibility.xlsx`, { feasibility: feasInputs() });
+  } catch (e) { alert(e.message || e); }
 }
 
 /* ---------- Model library (catalog) ---------- */
@@ -1002,6 +985,22 @@ function renderLibrary() {
 /* ---------- Model workspace ---------- */
 let manualMode = false;
 
+function dataSummaryHTML() {
+  const covered = [['Income statement', ['revenue', 'netIncome', 'ebitda']], ['Balance sheet', ['totalAssets', 'equity', 'debt', 'cash']], ['Cash flow', ['ocf', 'capex']]]
+    .map(([n, ks]) => { const ok = ks.some((k) => state.items[k]); return `<span class="${ok ? 'ok' : 'miss'}">${ok ? '✓' : '–'} ${n}</span>`; }).join('');
+  return `<div class="data-summary">
+      <div class="ds-check" aria-hidden="true">✓</div>
+      <div class="grow">
+        <strong>${esc(state.company)}</strong>
+        <div class="muted small">${esc(state.years[0])}–${esc(state.years.at(-1))} · ${Object.keys(state.items).length} line items</div>
+        <div class="coverage">${covered}</div>
+      </div>
+      <a class="btn ghost" href="#upload">View data</a>
+      <button class="btn ghost" data-action="change-data">Upload different statements</button>
+    </div>
+    <div class="uploader-slot" hidden></div>`;
+}
+
 function renderWorkspace(id) {
   const m = MODELS.find((x) => x.id === id) || MODELS[0];
   currentModel = m.id;
@@ -1014,20 +1013,8 @@ function renderWorkspace(id) {
     .map((x) => `<option value="${x.id}"${x.id === m.id ? ' selected' : ''}>${x.name}</option>`).join('')}</optgroup>`).join('');
 
   const has = hasData();
-  const covered = [['Income statement', ['revenue', 'netIncome', 'ebitda']], ['Balance sheet', ['totalAssets', 'equity', 'debt', 'cash']], ['Cash flow', ['ocf', 'capex']]]
-    .map(([n, ks]) => `<span class="${ks.some((k) => state.items[k]) ? 'ok' : 'miss'}">${ks.some((k) => state.items[k]) ? '✓' : '–'} ${n}</span>`).join('');
   $('#wsData').innerHTML = has
-    ? `<div class="data-summary">
-        <div class="ds-check" aria-hidden="true">✓</div>
-        <div class="grow">
-          <strong>${esc(state.company)}</strong>
-          <div class="muted small">${esc(state.years[0])}–${esc(state.years.at(-1))} · ${Object.keys(state.items).length} line items</div>
-          <div class="coverage">${covered}</div>
-        </div>
-        <a class="btn ghost" href="#upload">View data</a>
-        <button class="btn ghost" data-action="change-data">Upload different statements</button>
-      </div>
-      <div class="uploader-slot" hidden></div>`
+    ? dataSummaryHTML()
     : `<div class="uploader-slot"></div>
       <p class="manual small muted">No statements to hand? <button class="link" data-action="manual">Continue with manual assumptions →</button></p>`;
 
@@ -1040,13 +1027,60 @@ function renderWorkspace(id) {
   if (show) renderModel();
 }
 
+/* ---------- Excel model builder page ---------- */
+const BUILD_IDS = ['dcf', 'comps', 'wacc', 'montecarlo', 'lbo', 'loan', 'npv', 'breakeven', 'feasibility', 'ratios', 'forecast'];
+let buildSel = new Set(BUILD_IDS);
+
+function renderBuild() {
+  const has = hasData();
+  $('#buildData').innerHTML = has ? dataSummaryHTML() : '<div class="uploader-slot"></div>';
+  $('#buildChoose').hidden = $('#buildExport').hidden = !has;
+  $$('#buildStepper li').forEach((li) => { li.className = +li.dataset.step === 1 ? (has ? 'done' : 'active') : has ? 'active' : ''; });
+  if (!has) return;
+  const groups = [...new Set(CATALOG.filter((c) => BUILD_IDS.includes(c.id)).map((c) => c.group))];
+  $('#modelChecks').innerHTML = groups.map((g) => `<div class="check-group"><h4>${g}</h4><div class="check-grid">${CATALOG.filter((c) => c.group === g && BUILD_IDS.includes(c.id)).map((c) => {
+    const m = MODELS.find((x) => x.id === c.id), x = XL_MODELS[c.id];
+    return `<label class="check"><input type="checkbox" value="${c.id}"${buildSel.has(c.id) ? ' checked' : ''}>
+      <span class="box" aria-hidden="true"></span>
+      <span class="ct"><strong>${c.title || m.name}</strong><span>${x.desc}</span><em>Sheet: ${x.sheet}</em></span></label>`;
+  }).join('')}</div></div>`).join('');
+  updateBuildSummary();
+}
+
+function updateBuildSummary() {
+  const n = buildSel.size;
+  $('#buildSummary').textContent = n
+    ? `Your workbook will contain a Cover sheet, a Historicals sheet and ${n} model sheet${n > 1 ? 's' : ''}: ${BUILD_IDS.filter((id) => buildSel.has(id)).map((id) => XL_MODELS[id].sheet).join(', ')}.`
+    : 'Choose at least one model in step 2.';
+  $('#buildBtn').disabled = !n;
+}
+
+async function buildExcel() {
+  const btn = $('#buildBtn'), m = $('#buildMsg');
+  btn.disabled = true;
+  m.className = 'upload-msg small';
+  m.textContent = 'Building your workbook…';
+  try {
+    const ids = BUILD_IDS.filter((id) => buildSel.has(id));
+    await downloadModelWorkbook(ids, `${slug(state.company)}-financial-model.xlsx`);
+    m.className = 'upload-msg small ok';
+    m.textContent = `Done. Your Excel model with ${ids.length} model sheet${ids.length > 1 ? 's' : ''} has been downloaded.`;
+  } catch (e) {
+    m.className = 'upload-msg small err';
+    m.textContent = e.message || String(e);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 /* ---------- Routing & init ---------- */
 function route() {
   const [view, arg] = (location.hash || '#library').slice(1).split('/');
-  const v = view === 'model' ? 'workspace' : ['library', 'dashboard', 'upload', 'feasibility'].includes(view) ? view : 'library';
+  const v = view === 'model' ? 'workspace' : ['build', 'library', 'dashboard', 'upload', 'feasibility'].includes(view) ? view : 'library';
   $$('.view').forEach((el) => el.classList.toggle('active', el.id === `view-${v}`));
   $$('nav a').forEach((a) => a.classList.toggle('active', a.dataset.view === (v === 'workspace' ? 'library' : v)));
   $('#companyPill').textContent = hasData() ? state.company : 'No data loaded';
+  if (v === 'build') renderBuild();
   if (v === 'library') renderLibrary();
   if (v === 'workspace') renderWorkspace(arg);
   if (v === 'dashboard') renderDashboard();
@@ -1057,6 +1091,7 @@ function refreshAll() {
   route();
   // After an upload inside a model, jump straight to the results
   if ($('#view-workspace').classList.contains('active') && hasData()) $('#wsModelStep').scrollIntoView({ behavior: 'smooth' });
+  if ($('#view-build').classList.contains('active') && hasData()) $('#buildChoose').scrollIntoView({ behavior: 'smooth' });
 }
 
 function init() {
@@ -1081,7 +1116,7 @@ function init() {
     if (!a) return;
     if (a.dataset.action === 'sample') loadSample();
     if (a.dataset.action === 'manual') { manualMode = true; route(); }
-    if (a.dataset.action === 'change-data') { a.closest('.data-summary').hidden = true; $('#wsData .uploader-slot').hidden = false; }
+    if (a.dataset.action === 'change-data') { a.closest('.data-summary').hidden = true; a.closest('.step').querySelector('.uploader-slot').hidden = false; }
   });
 
   $('#clearData').addEventListener('click', () => {
@@ -1096,6 +1131,19 @@ function init() {
     const b = e.target.closest('[data-cat]');
     if (b) { currentCat = b.dataset.cat; renderLibrary(); }
   });
+  $('#modelChecks').addEventListener('change', (e) => {
+    if (!e.target.matches('input[type=checkbox]')) return;
+    e.target.checked ? buildSel.add(e.target.value) : buildSel.delete(e.target.value);
+    updateBuildSummary();
+  });
+  $('#buildChoose').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-sel]');
+    if (!b) return;
+    buildSel = new Set(b.dataset.sel === 'all' ? BUILD_IDS : []);
+    renderBuild();
+  });
+  $('#buildBtn').addEventListener('click', buildExcel);
+
   $('#modelSelect').addEventListener('change', (e) => { location.hash = `#model/${e.target.value}`; });
   $('#dlModel').addEventListener('click', downloadModel);
 

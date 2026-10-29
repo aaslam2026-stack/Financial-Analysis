@@ -20,6 +20,7 @@
         <span class="brand-text">Finance Studio<small>Corporate Finance &amp; Valuation</small></span>
       </a>
       <nav>
+        <a href="#build" data-view="build">Build Excel Model</a>
         <a href="#library" data-view="library">Model Library</a>
         <a href="#dashboard" data-view="dashboard">Dashboard</a>
         <a href="#feasibility" data-view="feasibility">Feasibility Report</a>
@@ -37,6 +38,10 @@
           <p class="eyebrow">Model library</p>
           <h1>Financial models built from your statements</h1>
           <p class="lead">Choose a model, upload your income statement, balance sheet and cash flow statement, and get a complete analysis you can export to Excel. Every example below uses our sample company, Aurora Retail Co.</p>
+          <div class="hero-cta">
+            <a class="btn gold" href="#build">Upload statements &amp; build Excel model <span aria-hidden="true">→</span></a>
+            <a class="btn outline-light" href="samples/models/full-financial-model.xlsx" download>Download sample workbook</a>
+          </div>
           <ol class="steps-strip">
             <li><span>1</span><div><strong>Choose a model</strong>DCF, LBO, IRR, comparables and more</div></li>
             <li><span>2</span><div><strong>Upload your statements</strong>PDF, Excel (.xlsx) or CSV</div></li>
@@ -46,6 +51,56 @@
       </div>
       <div class="cat-tabs" id="catTabs"></div>
       <div class="catalog" id="catalog"></div>
+    </section>
+
+    <!-- EXCEL MODEL BUILDER -->
+    <section id="view-build" class="view">
+      <header class="page-head">
+        <p class="eyebrow">Excel model builder</p>
+        <h1>Build your Excel financial model</h1>
+        <p class="muted">Upload your financial statements, choose the models you want, and download one workbook with live Excel formulas linked to your numbers.</p>
+      </header>
+      <ol class="stepper" id="buildStepper">
+        <li data-step="1"><span>1</span>Upload statements</li>
+        <li data-step="2"><span>2</span>Choose models</li>
+        <li data-step="3"><span>3</span>Download Excel</li>
+      </ol>
+      <div class="glass card step">
+        <div class="step-head">
+          <span class="num">1</span>
+          <div>
+            <h3>Upload your financial statements</h3>
+            <p class="muted small">Income statement, balance sheet and cash flow statement as PDF, Excel or CSV. They become the Historicals sheet, and every model links to them.</p>
+          </div>
+        </div>
+        <div id="buildData"></div>
+      </div>
+      <div class="glass card step" id="buildChoose">
+        <div class="step-head">
+          <span class="num">2</span>
+          <div class="grow">
+            <h3>Choose the models to include</h3>
+            <p class="muted small">Each model becomes its own sheet in the workbook. Tick as many as you need.</p>
+          </div>
+          <div class="row tight-row"><button class="btn ghost" data-sel="all">Select all</button><button class="btn ghost" data-sel="none">Clear</button></div>
+        </div>
+        <div id="modelChecks"></div>
+      </div>
+      <div class="glass card step" id="buildExport">
+        <div class="step-head">
+          <span class="num">3</span>
+          <div class="grow">
+            <h3>Download your Excel model</h3>
+            <p class="muted small" id="buildSummary"></p>
+          </div>
+        </div>
+        <ul class="xl-features">
+          <li><strong>Live formulas.</strong> Change a blue input and the whole model recalculates in Excel.</li>
+          <li><strong>Linked to your statements.</strong> Green cells pull figures from the Historicals sheet.</li>
+          <li><strong>Banker-style layout.</strong> A cover sheet with contents, then assumptions, calculations and outputs on each sheet.</li>
+        </ul>
+        <div class="row"><button class="btn btn-lg" id="buildBtn">Build Excel model</button><span class="upload-msg small" id="buildMsg" role="status"></span></div>
+      </div>
     </section>
 
     <!-- MODEL WORKSPACE -->
@@ -173,5 +228,6 @@
   </footer>
 
   <script src="app.js"></script>
+  <script src="excel.js"></script>
 </body>
 </html>
