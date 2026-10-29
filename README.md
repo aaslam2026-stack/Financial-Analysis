@@ -1,6 +1,6 @@
-# Glass Finance Studio
+# Finance Studio
 
-A simple, Apple-style "glass" web app for building financial models from your own statements.
+A corporate finance and valuation web app with a clean, institutional banking design. Build financial models from your own statements.
 Plain HTML, CSS and JavaScript, with no build step.
 
 ## Features
@@ -14,6 +14,7 @@ Plain HTML, CSS and JavaScript, with no build step.
   - Projects & investments: NPV / IRR / MIRR / Payback, Break-even
   - Performance: Ratio Analysis, 3-Statement Forecast
   - **Download Excel**: exports the model's inputs, key results and every table (as real numbers) plus your source data.
+- **Sample Models** library: a card for every option with a preview image, what you get, what it is best for, a downloadable sample Excel file (`samples/models/`) and a "Try with sample data" button.
 - **Feasibility Report**: NPV, IRR, payback, sensitivity analysis, a verdict and recommendations. You can download it to Excel or print it / save it as a PDF.
 
 Data stays in the browser (localStorage). Nothing is uploaded to a server.

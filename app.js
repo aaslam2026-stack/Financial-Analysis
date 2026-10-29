@@ -4,7 +4,8 @@
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => [...document.querySelectorAll(s)];
 const STORE = 'gfs-data-v1';
-const COLORS = { blue: '#0a84ff', green: '#30d158', orange: '#ff9f0a', purple: '#bf5af2', red: '#ff453a', teal: '#64d2ff' };
+// Institutional palette: steel blue, green, gold, slate, red, teal (readable on light and dark)
+const COLORS = { blue: '#2f6db5', green: '#2e8b57', orange: '#c19a3f', purple: '#6b7fa6', red: '#c0392b', teal: '#3a9ca6' };
 
 let state = { company: '', years: [], items: {} };
 const charts = {};
@@ -817,15 +818,91 @@ function downloadReport() {
   exportXlsx($('#report'), inputs, `${$('#f-name').value || 'Project'}: Feasibility Report`, `${slug($('#f-name').value)}-feasibility.xlsx`);
 }
 
+/* ---------- Sample model library ---------- */
+const SAMPLES = [
+  { id: 'dashboard', title: 'Performance Dashboard', group: 'Reporting',
+    desc: 'An interactive, Power BI-style view of your uploaded statements.',
+    outputs: ['KPI cards: revenue, EBITDA, net income, net debt, CAGR', 'Trend with YoY growth, margins and a profit bridge', 'Year and metric filters, plus a full financial matrix'],
+    best: 'Board packs and monthly management reporting.' },
+  { id: 'powerbi', title: 'Power BI Dataset', group: 'Reporting', file: 'powerbi-dataset.xlsx', noTry: true,
+    desc: 'A clean Excel file shaped for Power BI Desktop, made with one click on the dashboard.',
+    outputs: ['FactFinancials: company, year, category, metric, value', 'Ratios table with percent and multiple formats', 'README tab with step-by-step import instructions'],
+    best: 'Teams that already report in Power BI.' },
+  { id: 'dcf', group: 'Valuation', file: 'dcf-valuation.xlsx',
+    outputs: ['Enterprise value, equity value and value per share', '5-year free cash flow projection', 'WACC × terminal growth sensitivity, bear/base/bull cases'],
+    best: 'Valuing a whole business from its future cash flows.' },
+  { id: 'comps', group: 'Valuation', file: 'comparables.xlsx',
+    outputs: ['Implied equity value from EV/EBITDA, EV/Sales and P/E', 'Low, median and high valuation range', 'Football-field chart'],
+    best: 'A market cross-check on your DCF.' },
+  { id: 'wacc', group: 'Valuation', file: 'wacc.xlsx',
+    outputs: ['WACC, cost of equity (CAPM), after-tax cost of debt', 'Debt and equity weights', 'Capital structure chart'],
+    best: 'Setting the discount rate for the DCF and project appraisals.' },
+  { id: 'montecarlo', group: 'Valuation', file: 'monte-carlo.xlsx',
+    outputs: ['P10 / P50 / P90 enterprise value', 'Probability of beating the base case', 'Distribution chart from thousands of runs'],
+    best: 'Showing uncertainty to investors or a credit committee.' },
+  { id: 'lbo', group: 'Deals & financing', file: 'lbo.xlsx',
+    outputs: ['Sponsor IRR and MOIC', 'Year-by-year debt schedule and cash sweep', 'Entry vs exit equity bridge'],
+    best: 'Testing a private equity or management buyout.' },
+  { id: 'loan', group: 'Deals & financing', file: 'loan-schedule.xlsx',
+    outputs: ['Payment per period, total interest, total paid', 'Annual principal, interest and balance', 'Balance run-off chart'],
+    best: 'Term loans, equipment finance and refinancing.' },
+  { id: 'npv', group: 'Projects & investments', file: 'npv-irr.xlsx',
+    outputs: ['NPV, IRR, MIRR and profitability index', 'Simple and discounted payback', 'Cumulative cash flow chart'],
+    best: 'Go / no-go decisions on capital projects.' },
+  { id: 'breakeven', group: 'Projects & investments', file: 'break-even.xlsx',
+    outputs: ['Break-even units and revenue', 'Margin of safety and operating leverage', 'Revenue vs cost chart'],
+    best: 'Pricing, new products and cost planning.' },
+  { id: 'feasibility', title: 'Feasibility Report', group: 'Projects & investments', file: 'feasibility-report.xlsx',
+    desc: 'A complete investment appraisal with a clear verdict and recommendations.',
+    outputs: ['Verdict: Feasible, Feasible with conditions or Not feasible', '10-year cash flows, NPV, IRR, payback, break-even', 'Sensitivity to revenue and cost changes'],
+    best: 'Business cases for lenders, investors or the board.' },
+  { id: 'ratios', group: 'Performance', file: 'ratio-analysis.xlsx',
+    outputs: ['Growth, margin, liquidity and leverage ratios', 'Return on assets and equity', 'Every year side by side'],
+    best: 'Credit reviews and benchmarking.' },
+  { id: 'forecast', group: 'Performance', file: '3-statement-forecast.xlsx',
+    outputs: ['Projected revenue, gross profit, EBITDA, net income', 'Cash and debt roll-forward', 'History vs forecast chart'],
+    best: 'Budgets and business plans.' },
+];
+
+function renderSamples() {
+  $('#sampleGrid').innerHTML = SAMPLES.map((s) => {
+    const m = MODELS.find((x) => x.id === s.id);
+    return `<article class="glass sample">
+      <div class="thumb"><img src="samples/previews/${s.id}.jpg" alt="Preview of the ${esc(s.title || m.name)} sample" loading="lazy"></div>
+      <div class="body">
+        <p class="eyebrow">${s.group}</p>
+        <h3>${s.title || m.name}</h3>
+        <p>${s.desc || m.desc}</p>
+        <ul>${s.outputs.map((o) => `<li>${o}</li>`).join('')}</ul>
+        <div class="best"><strong>Best for:</strong> ${s.best}</div>
+        <div class="row">
+          ${s.noTry ? '' : `<button class="btn" data-try="${s.id}">Try with sample data</button>`}
+          ${s.file ? `<a class="btn ghost" href="samples/models/${s.file}" download>Download sample (.xlsx)</a>` : ''}
+        </div>
+      </div>
+    </article>`;
+  }).join('');
+}
+
+function trySample(id) {
+  if (!hasData()) applyRows(parseCSV(SAMPLE_CSV), 'Aurora Retail Co. (sample)');
+  if (id === 'dashboard') return void (location.hash = '#dashboard');
+  if (id === 'feasibility') { location.hash = '#feasibility'; return generateReport(); }
+  currentModel = id;
+  location.hash = '#models';
+}
+
 /* ---------- Routing & init ---------- */
 function route() {
   const view = (location.hash || '#dashboard').slice(1);
-  const valid = ['dashboard', 'upload', 'models', 'feasibility'].includes(view) ? view : 'dashboard';
+  const valid = ['dashboard', 'upload', 'models', 'samples', 'feasibility'].includes(view) ? view : 'dashboard';
   $$('.view').forEach((v) => v.classList.toggle('active', v.id === `view-${valid}`));
   $$('nav a').forEach((a) => a.classList.toggle('active', a.dataset.view === valid));
   if (valid === 'dashboard') renderDashboard();
   if (valid === 'models') renderModelSelect();
   if (valid === 'upload') renderPreview();
+  if (valid === 'samples') renderSamples();
+  window.scrollTo(0, 0);
 }
 function refreshAll() { $('#companyPill').textContent = hasData() ? state.company : 'No data loaded'; route(); }
 
@@ -853,6 +930,8 @@ function init() {
     $('#uploadMsg').textContent = 'Data cleared.';
     refreshAll();
   });
+
+  $('#sampleGrid').addEventListener('click', (e) => { const b = e.target.closest('[data-try]'); if (b) trySample(b.dataset.try); });
 
   $('#modelSelect').addEventListener('change', (e) => { currentModel = e.target.value; renderModel(); });
   $('#dlModel').addEventListener('click', downloadModel);
