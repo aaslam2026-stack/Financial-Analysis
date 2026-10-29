@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Glass Finance Studio</title>
+  <meta name="description" content="Upload financial statements and build DCF, IRR, LBO and more, with a dashboard and feasibility reports.">
+  <link rel="stylesheet" href="styles.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+</head>
+<body>
+  <div class="blob b1"></div><div class="blob b2"></div><div class="blob b3"></div>
+
+  <aside class="sidebar glass">
+    <div class="brand"><span class="logo">◆</span> Finance Studio</div>
+    <nav>
+      <a href="#dashboard" data-view="dashboard">Dashboard</a>
+      <a href="#upload" data-view="upload">Upload Data</a>
+      <a href="#models" data-view="models">Models</a>
+      <a href="#feasibility" data-view="feasibility">Feasibility Report</a>
+    </nav>
+    <div class="company-pill" id="companyPill">No data loaded</div>
+  </aside>
+
+  <main>
+    <!-- DASHBOARD -->
+    <section id="view-dashboard" class="view">
+      <header class="page-head">
+        <h1>Dashboard</h1>
+        <p class="muted">A quick look at your company's performance and local weather conditions.</p>
+      </header>
+      <div id="dashEmpty" class="glass card empty">
+        <h3>No financial statements yet</h3>
+        <p class="muted">Upload a CSV or Excel file, or try the sample data.</p>
+        <div class="row"><a class="btn" href="#upload">Upload data</a><button class="btn ghost" data-action="sample">Load sample</button></div>
+      </div>
+      <div id="dashContent" hidden>
+        <div class="kpis" id="kpis"></div>
+        <div class="grid two">
+          <div class="glass card"><h3>Revenue, EBITDA & Net Income</h3><div class="chart"><canvas id="chTrend"></canvas></div></div>
+          <div class="glass card"><h3>Margins</h3><div class="chart"><canvas id="chMargin"></canvas></div></div>
+          <div class="glass card"><h3>Balance Sheet (latest)</h3><div class="chart"><canvas id="chBalance"></canvas></div></div>
+          <div class="glass card"><h3>Key Ratios (latest)</h3><div id="dashRatios"></div></div>
+        </div>
+      </div>
+      <div class="glass card">
+        <div class="row spread">
+          <h3>Weather Outlook <span class="tag">Open-Meteo</span></h3>
+          <form class="row" id="weatherForm">
+            <input id="weatherCity" placeholder="City, e.g. Miami" value="Miami">
+            <button class="btn">Check</button>
+          </form>
+        </div>
+        <p class="muted small">Weather affects many businesses (retail, farming, energy, logistics, construction). Use this to spot short-term risk.</p>
+        <div id="weatherOut"></div>
+        <div class="chart"><canvas id="chWeather"></canvas></div>
+      </div>
+    </section>
+
+    <!-- UPLOAD -->
+    <section id="view-upload" class="view">
+      <header class="page-head">
+        <h1>Upload Financial Statements</h1>
+        <p class="muted">CSV or Excel (.xlsx). Put line items in the first column and years across the top row.</p>
+      </header>
+      <div class="grid two">
+        <div class="glass card">
+          <label class="drop" id="drop">
+            <input type="file" id="fileInput" accept=".csv,.xlsx,.xls" hidden>
+            <div class="drop-icon">⬆</div>
+            <strong>Drop your file here</strong>
+            <span class="muted small">or click to browse</span>
+          </label>
+          <div class="row">
+            <input id="companyName" placeholder="Company name" style="flex:1">
+          </div>
+          <div class="row">
+            <button class="btn ghost" data-action="sample">Load sample data</button>
+            <button class="btn ghost" id="dlTemplate">Download template</button>
+            <button class="btn ghost danger" id="clearData">Clear</button>
+          </div>
+          <p id="uploadMsg" class="small"></p>
+        </div>
+        <div class="glass card">
+          <h3>Recognised line items</h3>
+          <p class="muted small">Matched automatically (case-insensitive). Missing items are derived where possible, e.g. EBITDA = EBIT + D&amp;A.</p>
+          <div class="chips static">
+            <span>Revenue / Sales</span><span>Cost of Goods Sold</span><span>Operating Expenses</span><span>EBITDA</span>
+            <span>Depreciation &amp; Amortization</span><span>EBIT / Operating Income</span><span>Interest Expense</span>
+            <span>Net Income</span><span>Cash</span><span>Current Assets</span><span>Total Assets</span>
+            <span>Current Liabilities</span><span>Total Liabilities</span><span>Total Debt</span><span>Equity</span>
+            <span>CapEx</span><span>Operating Cash Flow</span>
+          </div>
+        </div>
+      </div>
+      <div class="glass card" id="previewCard" hidden>
+        <h3>Parsed data</h3>
+        <div class="table-wrap" id="preview"></div>
+      </div>
+    </section>
+
+    <!-- MODELS -->
+    <section id="view-models" class="view">
+      <header class="page-head">
+        <h1>Financial Models</h1>
+        <p class="muted">Pick what you need. Inputs are pre-filled from your statements, and you can change any of them.</p>
+      </header>
+      <div class="chips" id="goalChips">
+        <button data-goal="all" class="on">All models</button>
+        <button data-goal="valuation">Value a company</button>
+        <button data-goal="investment">Evaluate a project</button>
+        <button data-goal="acquisition">Buy a company</button>
+        <button data-goal="performance">Analyse performance</button>
+      </div>
+      <div id="modelTabs" class="tabs"></div>
+      <div id="modelArea"></div>
+    </section>
+
+    <!-- FEASIBILITY -->
+    <section id="view-feasibility" class="view">
+      <header class="page-head">
+        <h1>Feasibility Report</h1>
+        <p class="muted">Enter your project details to get a full report, including climate risk for the location from Open-Meteo.</p>
+      </header>
+      <div class="glass card no-print">
+        <div class="form-grid" id="feasForm"></div>
+        <div class="row"><button class="btn" id="genReport">Generate report</button><button class="btn ghost" id="printReport" hidden>Print / Save PDF</button></div>
+      </div>
+      <div id="report"></div>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
