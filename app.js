@@ -985,11 +985,76 @@ const CATALOG = [
     needs: 'Income statement and balance sheet (cash flow optional)', best: 'Board packs and monthly management reporting.' },
 ];
 const CATEGORIES = ['All models', ...new Set(CATALOG.map((c) => c.group))];
-let currentCat = 'All models', examples = null;
+const KEYWORDS = { dcf: 'discounted cash flow intrinsic valuation', lbo: 'leveraged buyout private equity pe sponsor', forecast: '3 statement three statement income statement balance sheet cash flow budget projection',
+  npv: 'irr net present value capital budgeting payback', wacc: 'discount rate cost of capital capm beta', comps: 'comparable companies trading multiples peers', montecarlo: 'simulation risk scenario probability',
+  breakeven: 'break even cvp pricing units', loan: 'debt amortization mortgage repayment', feasibility: 'project business case appraisal', ratios: 'ratio analysis credit liquidity leverage', dashboard: 'power bi kpi report charts' };
+const BAND = { Valuation: '#3b5b8a', 'Deals & financing': '#2f5d50', 'Projects & investments': '#6b2e3e', Performance: '#36707c', Reporting: '#4a4f6a' };
+let currentCat = 'All models', examples = null, thumbs = null, query = '', stageFilter = null, showAll = false;
 
 function sampleState() {
   const p = parseRows(parseCSV(SAMPLE_CSV));
   return { company: SAMPLE_COMPANY, years: p.years, items: derive(p.items) };
+}
+
+// Small spreadsheet preview for each card, filled with the sample company's real numbers
+function thumbData(id, v, d) {
+  const k = (x) => (x == null || !isFinite(x) ? '–' : x < 0 ? `(${Math.round(-x / 1000).toLocaleString()})` : Math.round(x / 1000).toLocaleString());
+  const yrsC = (n) => Array.from({ length: n }, (_, t) => fyLabel(t + 1));
+  const p1 = (x) => (x == null || !isFinite(x) ? '–' : `${(x * 100).toFixed(1)}%`);
+  if (id === 'dcf') {
+    const r = dcfCore({ ...v, nwc0: d.nwc0 }), c = (f) => r.rows.map(f);
+    return { cols: yrsC(r.rows.length), rows: [['Revenue', ...c((x) => k(x.rev))], ['EBITDA', ...c((x) => k(x.ebitda))], ['EBIT', ...c((x) => k(x.ebit))], ['NOPAT', ...c((x) => k(x.nopat))], ['CapEx', ...c((x) => k(x.capex))], ['*Unlevered FCF', ...c((x) => k(x.fcf))], ['Discount factor', ...c((x) => x.df.toFixed(3))], ['*PV of FCF', ...c((x) => k(x.pv))]] };
+  }
+  if (id === 'forecast') {
+    const Y = project3(driversFromForecast(v), d.op, 5), c = (f) => Y.map(f);
+    return { cols: yrsC(5), rows: [['Revenue', ...c((y) => k(y.rev))], ['Cost of goods sold', ...c((y) => k(y.cogs))], ['*Gross profit', ...c((y) => k(y.gp))], ['Operating expenses', ...c((y) => k(y.opex))], ['*EBITDA', ...c((y) => k(y.ebitda))], ['D&A', ...c((y) => k(y.da))], ['*Net income', ...c((y) => k(y.ni))], ['Closing cash', ...c((y) => k(y.cash))]] };
+  }
+  if (id === 'lbo') {
+    const L = lboCore(v), c = (f) => L.rows.map(f);
+    return { cols: yrsC(L.rows.length), rows: [['EBITDA', ...c((x) => k(x.e))], ['Interest', ...c((x) => k(x.int))], ['*Free cash flow', ...c((x) => k(x.fcf))], ['Debt repaid', ...c((x) => k(x.pay))], ['*Debt balance', ...c((x) => k(x.debt))], ['Debt / EBITDA', ...c((x) => x.lev.toFixed(2) + 'x')], ['*Equity value', ...c((x) => k(x.eqv))]] };
+  }
+  if (id === 'comps') {
+    const L = [list(v.evE), list(v.evS), list(v.pe)], n = Math.max(...L.map((a) => a.length));
+    return { cols: ['EV/EBITDA', 'EV/Sales', 'P/E'], rows: [...Array.from({ length: n }, (_, i) => [`Peer ${i + 1}`, ...L.map((a) => (a[i] == null ? '' : a[i].toFixed(1) + 'x'))]), ['*Median', ...L.map((a) => median(a).toFixed(2) + 'x')]] };
+  }
+  if (id === 'wacc') {
+    const V = v.E + v.D, ke = (v.rf + v.beta * v.mrp + v.sp) / 100, kd = (v.kd / 100) * (1 - v.tax / 100);
+    return { cols: ['Value'], rows: [['Risk-free rate', p1(v.rf / 100)], ['Levered beta', v.beta.toFixed(2)], ['Market risk premium', p1(v.mrp / 100)], ['*Cost of equity', p1(ke)], ['After-tax cost of debt', p1(kd)], ['Equity weight', p1(v.E / V)], ['Debt weight', p1(v.D / V)], ['*WACC', p1((v.E / V) * ke + (v.D / V) * kd)]] };
+  }
+  if (id === 'montecarlo') {
+    const mc = monteCarlo({ ...v, sims: 600 }, d), ps = [0.05, 0.1, 0.25, 0.5, 0.75, 0.9, 0.95];
+    return { cols: ['Enterprise value', 'Equity value'], rows: mc ? ps.map((p) => [`${p === 0.5 ? '*' : ''}P${Math.round(p * 100)}`, k(mc.q(p)), k(mc.q(p) - v.netDebt)]) : [] };
+  }
+  if (id === 'npv') {
+    const f = [-Math.abs(v.inv), ...list(v.flows)], r = v.rate / 100;
+    let cum = 0;
+    return { cols: f.map((_, t) => `Yr ${t}`), rows: [['*Cash flow', ...f.map(k)], ['Discount factor', ...f.map((_, t) => (1 / Math.pow(1 + r, t)).toFixed(3))], ['Discounted CF', ...f.map((x, t) => k(x / Math.pow(1 + r, t)))], ['*Cumulative', ...f.map((x) => k((cum += x)))]] };
+  }
+  if (id === 'breakeven') {
+    const cm = v.price - v.vc, vols = [0.5, 0.75, 1, 1.25, 1.5].map((m) => v.units * m);
+    return { cols: ['50%', '75%', 'Plan', '125%', '150%'], rows: [['Units sold', ...vols.map((u) => Math.round(u).toLocaleString())], ['Revenue', ...vols.map((u) => k(u * v.price))], ['Variable costs', ...vols.map((u) => k(u * v.vc))], ['Fixed costs', ...vols.map(() => k(v.fixed))], ['*Profit', ...vols.map((u) => k(u * cm - v.fixed))]] };
+  }
+  if (id === 'loan') {
+    const n = v.years * v.ppy, r = v.rate / 100 / v.ppy, pmt = r ? (v.P * r) / (1 - Math.pow(1 + r, -n)) : v.P / n;
+    let bal = v.P;
+    const rows = [];
+    for (let y = 1; y <= Math.min(v.years, 7); y++) {
+      const open = bal; let int = 0;
+      for (let q = 0; q < v.ppy; q++) { const i = bal * r; int += i; bal -= pmt - i; }
+      rows.push([`Year ${y}`, k(open), k(pmt * v.ppy), k(int), k(Math.max(0, bal))]);
+    }
+    return { cols: ['Opening', 'Payments', 'Interest', 'Closing'], rows };
+  }
+  if (id === 'feasibility') {
+    const fv = Object.fromEntries(FEAS.map(([key, , val]) => [key, val])), F = feasFlows(fv).rows.slice(0, 5);
+    return { cols: F.map((x) => `Yr ${x[0]}`), rows: [['Revenue', ...F.map((x) => k(x[1]))], ['*EBITDA', ...F.map((x) => k(x[2]))], ['Taxes', ...F.map((x) => k(x[3]))], ['*Net cash flow', ...F.map((x) => k(x[4]))]] };
+  }
+  if (id === 'ratios') {
+    const all = ratios(), yrs = state.years.slice(-5), idx = yrs.map((_, i) => all.length - yrs.length + i);
+    return { cols: yrs.map(String), rows: all[0].slice(0, 8).map(([name], j) => [name, ...idx.map((i) => String(all[i][j][1]))]) };
+  }
+  const yrs = state.years.slice(-5), at = (key) => yrs.map((_, i) => k(S(key)[state.years.length - yrs.length + i]));
+  return { cols: yrs.map(String), rows: [['*Revenue', ...at('revenue')], ['EBITDA', ...at('ebitda')], ['Net income', ...at('netIncome')], ['Cash', ...at('cash')], ['Total debt', ...at('debt')], ['Equity', ...at('equity')]] };
 }
 
 // Runs every model on the sample company once, so each card shows real example figures
@@ -998,49 +1063,142 @@ function computeExamples() {
   const saved = state;
   state = sampleState();
   examples = {};
+  thumbs = {};
   try {
     const d = defaults();
     MODELS.forEach((m) => {
-      const v = Object.fromEntries(m.inputs(d).map(([k, , val, t]) => [k, t === 'text' ? val : +val]));
+      const v = Object.fromEntries(m.inputs(d).map(([key, , val, t]) => [key, t === 'text' ? val : +val]));
       const tpl = document.createElement('template');
       tpl.innerHTML = m.run(v, d).html;
-      let pairs = [...tpl.content.querySelectorAll('.kpi')].map((k) => [k.querySelector('.label').textContent, k.querySelector('.value').textContent]);
+      let pairs = [...tpl.content.querySelectorAll('.kpi')].map((x) => [x.querySelector('.label').textContent, x.querySelector('.value').textContent]);
       if (!pairs.length) pairs = [...tpl.content.querySelectorAll('tbody tr')].map((tr) => [tr.cells[0].textContent, tr.cells[tr.cells.length - 1].textContent]).filter((p) => p[1] !== '—');
       examples[m.id] = pairs.slice(0, 3);
+      thumbs[m.id] = thumbData(m.id, v, d);
     });
-    const fv = Object.fromEntries(FEAS.map(([k, , val]) => [k, val])), { flows } = feasFlows(fv);
+    const fv = Object.fromEntries(FEAS.map(([key, , val]) => [key, val])), { flows } = feasFlows(fv);
     examples.feasibility = [['NPV', fmt(npv(fv.rate / 100, flows))], ['IRR', pct(irr(flows))], ['Payback', yrs(payback(flows))]];
     examples.dashboard = [[`Revenue ${state.years.at(-1)}`, fmt(L('revenue'))], ['EBITDA margin', pct(L('ebitda') / L('revenue'))], ['Revenue CAGR', pct(cagr(S('revenue')))]];
+    thumbs.feasibility = thumbData('feasibility', {}, d);
+    thumbs.dashboard = thumbData('dashboard', {}, d);
   } finally {
     state = saved;
   }
   return examples;
 }
 
-function cardHTML(c, ex) {
-  const m = MODELS.find((x) => x.id === c.id), href = c.href || `#model/${c.id}`;
+function sheetHTML(title, subtitle, color, t) {
+  return `<div class="sheet"><div class="sheet-band" style="background:${color}"><b>${esc(title)}</b><span>${esc(subtitle)}</span></div>
+    <table><thead><tr><th>Item</th>${t.cols.map((c) => `<th>${esc(c)}</th>`).join('')}</tr></thead>
+    <tbody>${t.rows.map((r) => { const b = r[0][0] === '*'; return `<tr${b ? ' class="b"' : ''}><td>${esc(b ? r[0].slice(1) : r[0])}</td>${r.slice(1).map((x) => `<td>${esc(x)}</td>`).join('')}</tr>`; }).join('')}</tbody></table></div>`;
+}
+
+function cardHTML(c, ex, th) {
+  const m = MODELS.find((x) => x.id === c.id), href = c.href || `#model/${c.id}`, title = c.title || m.name;
   return `<article class="model-card">
-    <div class="mc-top"><span class="mc-cat">${c.group}</span><span class="mc-fmt">Excel export</span></div>
-    <h3><a href="${href}">${c.title || m.name}</a></h3>
-    <p class="mc-desc">${c.desc || m.desc}</p>
-    <div class="mc-example">
-      <div class="mc-ex-head">Example output · Aurora Retail Co.</div>
-      <dl>${(ex || []).map(([k, v]) => `<div><dt>${esc(k)}</dt><dd>${esc(v)}</dd></div>`).join('')}</dl>
-    </div>
-    <div class="mc-section"><h4>Key outputs</h4><ul>${c.outputs.map((o) => `<li>${o}</li>`).join('')}</ul></div>
-    <div class="mc-section"><h4>Data needed</h4><p>${c.needs}</p></div>
-    <p class="mc-best"><strong>Best for:</strong> ${c.best}</p>
-    <div class="mc-foot">
-      <a class="btn" href="${href}">${c.cta || 'Build this model'} <span aria-hidden="true">→</span></a>
-      <a class="link" href="samples/models/${c.file}" download>Sample .xlsx</a>
+    <a class="mc-thumb" href="${href}" tabindex="-1" aria-hidden="true">${sheetHTML(title, c.outputs[0], BAND[c.group], th || { cols: [], rows: [] })}</a>
+    <div class="mc-body">
+      <div class="mc-top"><span>${c.group}</span><span>Excel model</span></div>
+      <h3><a href="${href}">${title}</a></h3>
+      <p class="mc-desc">${c.desc || m.desc}</p>
+      <div class="mc-example">${(ex || []).map(([key, val]) => `<span>${esc(key)} <b>${esc(val)}</b></span>`).join('')}</div>
+      <div class="mc-foot">
+        <a class="btn" href="${href}">${c.cta || 'Build this model'} <span aria-hidden="true">→</span></a>
+        <a class="link" href="samples/models/${c.file}" download>Sample .xlsx</a>
+      </div>
     </div>
   </article>`;
+}
+
+function matches(c) {
+  if (!query) return true;
+  const m = MODELS.find((x) => x.id === c.id), hay = [c.title, m?.name, c.desc, m?.desc, c.group, c.needs, c.best, ...c.outputs, KEYWORDS[c.id]].join(' ').toLowerCase();
+  return query.toLowerCase().split(/\s+/).filter(Boolean).every((w) => hay.includes(w));
 }
 
 function renderLibrary() {
   const ex = computeExamples();
   $('#catTabs').innerHTML = CATEGORIES.map((c) => `<button data-cat="${c}" class="${c === currentCat ? 'on' : ''}">${c}<span>${c === 'All models' ? CATALOG.length : CATALOG.filter((x) => x.group === c).length}</span></button>`).join('');
-  $('#catalog').innerHTML = CATALOG.filter((c) => currentCat === 'All models' || c.group === currentCat).map((c) => cardHTML(c, ex[c.id])).join('');
+  let list_ = CATALOG.filter((c) => (currentCat === 'All models' || c.group === currentCat) && (!stageFilter || stageFilter.ids.includes(c.id)) && matches(c));
+  const filtered = !!(query || stageFilter);
+  const note = $('#filterNote');
+  note.hidden = !filtered;
+  if (filtered) note.innerHTML = `${list_.length} model${list_.length === 1 ? '' : 's'} ${stageFilter ? `for <b>${esc(stageFilter.title)}</b>` : ''}${query ? ` matching “${esc(query)}”` : ''} <button class="link" data-clear-filter>Clear</button>`;
+  const total = list_.length;
+  if (!filtered && !showAll && currentCat === 'All models') list_ = list_.slice(0, 6);
+  $('#catalog').innerHTML = list_.length ? list_.map((c) => cardHTML(c, ex[c.id], thumbs[c.id])).join('') : '<p class="muted">No models match your search. Try “valuation”, “cash flow” or “loan”.</p>';
+  $('#viewAll').hidden = list_.length >= total;
+  if (!$('#quickTags').innerHTML) $('#quickTags').innerHTML = ['DCF', 'LBO', '3 statement', 'WACC', 'Break-even', 'Feasibility'].map((t) => `<button type="button" data-q="${t}">${t}</button>`).join('');
+  if (!$('#sectors').innerHTML) renderSectors();
+  if (!$('#stages').innerHTML) renderStages();
+}
+
+/* ---------- Sector sample companies ---------- */
+const SECTORS = [
+  { name: 'Software & SaaS', company: 'Northwind Cloud', text: 'Recurring subscription revenue, high gross margins and heavy sales and marketing spend.', rev: 48e6, g: 0.22, gm: 0.76, opex: 0.54, da: 0.03, capex: 0.03, ta: 1.1, ca: 0.55, debt: 0.1, cl: 0.25, rate: 0.07 },
+  { name: 'Retail & Consumer', company: 'Harbor Goods', text: 'Steady store and online sales, thin margins and fast-moving inventory.', rev: 85e6, g: 0.06, gm: 0.38, opex: 0.29, da: 0.025, capex: 0.03, ta: 0.6, ca: 0.6, debt: 0.25, cl: 0.18, rate: 0.065 },
+  { name: 'Industrial & Manufacturing', company: 'Ironline Industries', text: 'Capital-intensive production with moderate growth and solid cash generation.', rev: 140e6, g: 0.05, gm: 0.31, opex: 0.16, da: 0.04, capex: 0.05, ta: 0.9, ca: 0.45, debt: 0.3, cl: 0.15, rate: 0.06 },
+  { name: 'Healthcare & Medical Devices', company: 'Clearwell Medical', text: 'Premium products with high gross margins and significant R&D.', rev: 64e6, g: 0.09, gm: 0.63, opex: 0.41, da: 0.035, capex: 0.04, ta: 1.2, ca: 0.5, debt: 0.2, cl: 0.14, rate: 0.06 },
+  { name: 'Real Estate', company: 'Stonegate Properties', text: 'Rental income from a property portfolio, high leverage and large depreciation.', rev: 38e6, g: 0.04, gm: 0.68, opex: 0.12, da: 0.18, capex: 0.12, ta: 6, ca: 0.08, debt: 0.55, cl: 0.05, rate: 0.055 },
+  { name: 'Energy & Utilities', company: 'Brightvale Energy', text: 'Regulated, predictable revenue with heavy investment in long-lived assets.', rev: 210e6, g: 0.03, gm: 0.42, opex: 0.14, da: 0.08, capex: 0.11, ta: 2.2, ca: 0.2, debt: 0.45, cl: 0.1, rate: 0.055 },
+  { name: 'Restaurants & Hospitality', company: 'Copper Table Group', text: 'Multi-site food and drink business with high labour costs and lease commitments.', rev: 52e6, g: 0.07, gm: 0.66, opex: 0.53, da: 0.04, capex: 0.05, ta: 0.7, ca: 0.2, debt: 0.35, cl: 0.12, rate: 0.07 },
+  { name: 'Logistics & Transport', company: 'Swiftlane Logistics', text: 'Fleet-based delivery with low gross margins and steady volume growth.', rev: 95e6, g: 0.08, gm: 0.24, opex: 0.13, da: 0.05, capex: 0.06, ta: 0.8, ca: 0.35, debt: 0.35, cl: 0.14, rate: 0.065 },
+];
+
+// Five years of statements consistent with the sector's typical economics
+function sectorRows(p) {
+  const n = 5, y1 = new Date().getFullYear() - 1, years = Array.from({ length: n }, (_, i) => y1 - n + 1 + i);
+  const wob = (i, s) => 1 + 0.015 * Math.sin(i * 2.1 + s), r1k = (x) => Math.round(x / 1000) * 1000;
+  const L = { Revenue: [], 'Cost of Goods Sold': [], 'Operating Expenses': [], 'Depreciation & Amortization': [], 'Interest Expense': [], 'Net Income': [], Cash: [], 'Current Assets': [], 'Total Assets': [],
+    'Current Liabilities': [], 'Total Debt': [], 'Total Liabilities': [], Equity: [], CapEx: [], 'Operating Cash Flow': [] };
+  let prev = null;
+  years.forEach((_, i) => {
+    const rev = p.rev / Math.pow(1 + p.g, n - 1 - i) * wob(i, 0.4), cogs = rev * (1 - p.gm * wob(i, 1)), opex = rev * p.opex * wob(i, 2), da = rev * p.da;
+    const ta = rev * p.ta, debt = ta * p.debt, int = debt * p.rate, pbt = rev - cogs - opex - da - int, ni = pbt > 0 ? pbt * 0.75 : pbt;
+    const ca = ta * p.ca, cash = ca * 0.3, cl = rev * p.cl, equity = ta - cl - debt - ta * 0.04;
+    const ocf = ni + da - (prev ? (rev - prev) * 0.06 : 0);
+    const row = { Revenue: rev, 'Cost of Goods Sold': cogs, 'Operating Expenses': opex, 'Depreciation & Amortization': da, 'Interest Expense': int, 'Net Income': ni, Cash: cash, 'Current Assets': ca, 'Total Assets': ta,
+      'Current Liabilities': cl, 'Total Debt': debt, 'Total Liabilities': ta - equity, Equity: equity, CapEx: rev * p.capex, 'Operating Cash Flow': ocf };
+    Object.keys(L).forEach((k) => L[k].push(r1k(row[k])));
+    prev = rev;
+  });
+  return [['Line Item', ...years], ...Object.entries(L).map(([k, v]) => [k, ...v])];
+}
+
+function renderSectors() {
+  $('#sectors').innerHTML = SECTORS.map((p, i) => {
+    const em = p.gm - p.opex;
+    return `<button class="sector" type="button" data-sector="${i}">
+      <div class="s-top"><h3>${p.name}</h3><span class="s-count">Sample: ${p.company}</span></div>
+      <p>${p.text}</p>
+      <div class="s-metrics"><span>Revenue <b>${fmt(p.rev)}</b></span><span>Growth <b>${(p.g * 100).toFixed(0)}%</b></span><span>Gross margin <b>${(p.gm * 100).toFixed(0)}%</b></span><span>EBITDA margin <b>${(em * 100).toFixed(0)}%</b></span></div>
+    </button>`;
+  }).join('');
+}
+
+function loadSector(i) {
+  const p = SECTORS[i];
+  applyRows(sectorRows(p), `${p.company} (sample)`, 1, null, `${p.name} sample`);
+  location.hash = '#build';
+}
+
+/* ---------- Business stages ---------- */
+const ICONS = {
+  seed: '<svg viewBox="0 0 100 100" fill="none" stroke="currentColor" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"><path d="M50 88c-16 0-26-12-26-28 0-20 14-34 26-34s26 14 26 34c0 16-10 28-26 28z"/><path d="M50 26c0-8 4-14 10-16"/><path d="M28 44c8 6 14 0 22 6 8-6 14 0 22-6"/></svg>',
+  sprout: '<svg viewBox="0 0 100 100" fill="none" stroke="currentColor" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"><path d="M50 92V46"/><path d="M50 58c-22 2-30-12-30-26 16 0 30 8 30 26z"/><path d="M50 50c0-18 12-30 32-30 0 18-12 30-32 30z"/><path d="M30 92h40"/></svg>',
+  building: '<svg viewBox="0 0 100 100" fill="none" stroke="currentColor" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"><path d="M18 92V30l32-16v78"/><path d="M50 92V40l32 12v40"/><path d="M28 42h10M28 56h10M28 70h10M60 60h10M60 74h10"/><path d="M10 92h80"/></svg>',
+  handshake: '<svg viewBox="0 0 100 100" fill="none" stroke="currentColor" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"><path d="M8 40l16-10 18 6 12-8 12 4 26 8"/><path d="M8 40l14 22 14 12c4 4 10 4 14 0l22-20"/><path d="M42 36l-10 12c-2 4 4 8 8 4l10-8 16 14"/><path d="M92 40L78 62"/></svg>',
+};
+const STAGES = [
+  { title: 'Startup', sub: 'New ventures and projects', text: 'Check an idea pays off before you commit money.', ids: ['breakeven', 'npv', 'feasibility', 'loan'], icon: 'seed' },
+  { title: 'Growing company', sub: 'Scaling revenue and planning cash', text: 'Forecast the statements and see what the business is worth.', ids: ['forecast', 'dcf', 'ratios', 'dashboard'], icon: 'sprout' },
+  { title: 'Established company', sub: 'Valuing a mature business', text: 'Cross-check value with cash flows, peers and risk.', ids: ['dcf', 'comps', 'wacc', 'montecarlo'], icon: 'building' },
+  { title: 'Deals & financing', sub: 'Buyouts, loans and refinancing', text: 'Test returns, debt capacity and repayment.', ids: ['lbo', 'loan', 'wacc', 'comps'], icon: 'handshake' },
+];
+function renderStages() {
+  $('#stages').innerHTML = STAGES.map((s, i) => `<button class="stage" type="button" data-stage="${i}">
+    <h3>${s.title}</h3><p>${s.sub}</p><p>${s.text}</p>
+    <p><b>${s.ids.length} models:</b> ${s.ids.map((id) => CATALOG.find((c) => c.id === id)?.title || MODELS.find((m) => m.id === id).name).join(', ')}</p>
+    ${ICONS[s.icon]}</button>`).join('');
 }
 
 /* ---------- Model workspace ---------- */
@@ -1069,6 +1227,8 @@ function renderWorkspace(id) {
   $('#wsGroup').textContent = m.group;
   $('#wsTitle').textContent = m.name;
   $('#wsDesc').textContent = m.desc;
+  const cat = CATALOG.find((c) => c.id === m.id);
+  $('#wsInfo').innerHTML = cat ? `<span><b>You get:</b> ${cat.outputs.join(' · ')}</span><span><b>Data needed:</b> ${cat.needs}</span>` : '';
   const groups = [...new Set(MODELS.map((x) => x.group))];
   $('#modelSelect').innerHTML = groups.map((g) => `<optgroup label="${g}">${MODELS.filter((x) => x.group === g)
     .map((x) => `<option value="${x.id}"${x.id === m.id ? ' selected' : ''}>${x.name}</option>`).join('')}</optgroup>`).join('');
@@ -1192,6 +1352,34 @@ function init() {
     const b = e.target.closest('[data-cat]');
     if (b) { currentCat = b.dataset.cat; renderLibrary(); }
   });
+  const toModels = () => $('#modelsSec').scrollIntoView({ behavior: 'smooth' });
+  $('#searchInput').addEventListener('input', (e) => { query = e.target.value.trim(); renderLibrary(); });
+  $('#searchForm').addEventListener('submit', (e) => { e.preventDefault(); query = $('#searchInput').value.trim(); renderLibrary(); toModels(); });
+  $('#quickTags').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-q]');
+    if (!b) return;
+    $('#searchInput').value = query = b.dataset.q; stageFilter = null; currentCat = 'All models'; renderLibrary(); toModels();
+  });
+  $('#viewAll').addEventListener('click', () => { showAll = true; renderLibrary(); });
+  $('#filterNote').addEventListener('click', (e) => {
+    if (!e.target.closest('[data-clear-filter]')) return;
+    query = ''; stageFilter = null; $('#searchInput').value = ''; renderLibrary();
+  });
+  $('#sectors').addEventListener('click', (e) => { const b = e.target.closest('[data-sector]'); if (b) loadSector(+b.dataset.sector); });
+  $('#stages').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-stage]');
+    if (!b) return;
+    stageFilter = STAGES[+b.dataset.stage]; currentCat = 'All models'; renderLibrary(); toModels();
+  });
+  document.querySelectorAll('[data-car]').forEach((b) => b.addEventListener('click', () => {
+    const c = $('#stages'), w = c.querySelector('.stage')?.offsetWidth || 320;
+    c.scrollBy({ left: +b.dataset.car * (w + 28), behavior: 'smooth' });
+  }));
+  $('#menuBtn').addEventListener('click', () => {
+    const open = $('#topbar').classList.toggle('open');
+    $('#menuBtn').setAttribute('aria-expanded', open);
+  });
+  $('#mainNav').addEventListener('click', () => { $('#topbar').classList.remove('open'); $('#menuBtn').setAttribute('aria-expanded', 'false'); });
   $('#modelChecks').addEventListener('change', (e) => {
     if (!e.target.matches('input[type=checkbox]')) return;
     e.target.checked ? buildSel.add(e.target.value) : buildSel.delete(e.target.value);

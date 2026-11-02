@@ -1,6 +1,6 @@
 # Finance Studio
 
-A corporate finance and valuation web app with a clean, institutional banking design. Build financial models from your own statements.
+A corporate finance and valuation web app with a clean, editorial design. Build financial models from your own statements.
 Plain HTML, CSS and JavaScript, with no build step.
 
 ## How it works
@@ -28,7 +28,7 @@ The workbook is a formatted, formula-driven financial model:
 - **Blue** cells are inputs. Change one and the whole model recalculates.
 - **Green** cells link to the source data. **Black** cells are formulas. Shaded cells are key outputs.
 
-The **Model Library** shows a detailed card for each model with example results. Clicking a model opens a step-by-step workspace (upload → assumptions & results → Excel download).
+The **home page** has a search bar, model cards with spreadsheet previews and example results, sample companies for 8 sectors (Software, Retail, Industrial, Healthcare, Real Estate, Energy, Restaurants, Logistics), and models grouped by business stage. Each model card opens a step-by-step workspace (upload → assumptions & results → Excel download).
 
 ## Features
 

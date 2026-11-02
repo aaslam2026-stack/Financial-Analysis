@@ -13,20 +13,18 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 </head>
 <body>
-  <header class="topbar">
+  <header class="topbar" id="topbar">
     <div class="topbar-inner">
-      <a class="brand" href="#library">
-        <span class="mark">FS</span>
-        <span class="brand-text">Finance Studio<small>Corporate Finance &amp; Valuation</small></span>
-      </a>
-      <nav>
+      <a class="brand" href="#library"><span class="brand-text">Finance Studio</span></a>
+      <nav id="mainNav">
+        <a href="#library" data-view="library">Models</a>
         <a href="#build" data-view="build">Build Excel Model</a>
-        <a href="#library" data-view="library">Model Library</a>
         <a href="#dashboard" data-view="dashboard">Dashboard</a>
-        <a href="#feasibility" data-view="feasibility">Feasibility Report</a>
+        <a href="#feasibility" data-view="feasibility">Feasibility</a>
         <a href="#upload" data-view="upload">My Data</a>
       </nav>
       <div class="company-pill" id="companyPill">No data loaded</div>
+      <button class="menu-btn" id="menuBtn" aria-label="Open menu" aria-expanded="false"><span></span><span></span><span></span></button>
     </div>
   </header>
 
@@ -35,22 +33,50 @@
     <section id="view-library" class="view">
       <div class="hero">
         <div class="hero-inner">
-          <p class="eyebrow">Model library</p>
-          <h1>Financial models built from your statements</h1>
-          <p class="lead">Choose a model, upload your income statement, balance sheet and cash flow statement, and get a complete analysis you can export to Excel. Every example below uses our sample company, Aurora Retail Co.</p>
-          <div class="hero-cta">
-            <a class="btn gold" href="#build">Upload statements &amp; build Excel model <span aria-hidden="true">→</span></a>
-            <a class="btn outline-light" href="samples/models/full-financial-model.xlsx" download>Download sample workbook</a>
-          </div>
-          <ol class="steps-strip">
-            <li><span>1</span><div><strong>Choose a model</strong>DCF, LBO, IRR, comparables and more</div></li>
-            <li><span>2</span><div><strong>Upload your statements</strong>PDF, Excel (.xlsx) or CSV</div></li>
-            <li><span>3</span><div><strong>Review and export</strong>Adjust assumptions, then download to Excel</div></li>
-          </ol>
+          <p class="pill"><span class="dot" aria-hidden="true"></span>Free · Upload PDF, Excel or CSV · Export to Excel</p>
+          <h1>Professional Financial Models from Your Statements</h1>
+          <p class="lead">Upload your financial statements and get DCF, LBO, 3-statement and more as formatted Excel models with live formulas, charts and a dashboard.</p>
+          <form class="search" id="searchForm" role="search">
+            <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+            <input id="searchInput" type="search" placeholder="Find the perfect model…" aria-label="Search models" autocomplete="off">
+            <button type="submit" aria-label="Search"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg></button>
+          </form>
+          <div class="quick-tags" id="quickTags"></div>
         </div>
       </div>
-      <div class="cat-tabs" id="catTabs"></div>
-      <div class="catalog" id="catalog"></div>
+      <div class="strip">
+        <span>Reads <b>PDF</b>, <b>Excel</b> and <b>CSV</b> statements</span>
+        <span>Exports <b>formula-driven Excel</b></span>
+        <span><b>Income statement</b>, <b>balance sheet</b>, <b>cash flow</b> and <b>dashboard</b> sheets</span>
+      </div>
+
+      <section class="home-sec" id="modelsSec">
+        <div class="sec-head"><h2>Financial model templates</h2></div>
+        <div class="cat-tabs" id="catTabs"></div>
+        <div class="filter-note" id="filterNote" hidden></div>
+        <div class="catalog" id="catalog"></div>
+        <div class="center"><button class="link-u" id="viewAll" type="button">View all models</button></div>
+      </section>
+
+      <section class="home-sec">
+        <div class="sec-head"><h2>Financial model examples from any sector</h2></div>
+        <p class="sec-lead">Open a sample company with typical figures for its industry, then build any model from it.</p>
+        <div class="sectors" id="sectors"></div>
+      </section>
+
+      <section class="home-sec">
+        <div class="sec-head">
+          <h2>Models for every stage of a business</h2>
+          <div class="car-nav"><button type="button" data-car="-1" aria-label="Previous">‹</button><button type="button" data-car="1" aria-label="Next">›</button></div>
+        </div>
+        <div class="carousel" id="stages"></div>
+      </section>
+
+      <section class="cta-band">
+        <h2>Turn your statements into a model in minutes</h2>
+        <p>Upload once. Pick the models you need. Download one Excel workbook.</p>
+        <div class="row"><a class="btn btn-lg" href="#build">Upload statements <span aria-hidden="true">→</span></a><a class="link-u" href="samples/models/full-financial-model.xlsx" download>Download a sample workbook</a></div>
+      </section>
     </section>
 
     <!-- EXCEL MODEL BUILDER -->
@@ -111,6 +137,7 @@
           <p class="eyebrow" id="wsGroup"></p>
           <h1 id="wsTitle"></h1>
           <p class="muted" id="wsDesc"></p>
+          <div class="ws-info" id="wsInfo"></div>
         </div>
         <div class="field ws-switch"><label for="modelSelect">Switch model</label><select id="modelSelect"></select></div>
       </header>
