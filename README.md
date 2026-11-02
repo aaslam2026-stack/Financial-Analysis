@@ -10,10 +10,23 @@ Plain HTML, CSS and JavaScript, with no build step.
 2. Choose the models you want: DCF, Comparables, WACC, Monte Carlo, LBO, Loan Schedule, NPV / IRR, Break-even, Feasibility, Ratio Analysis, 3-Statement Forecast (or select all).
 3. Download **one Excel workbook**: a Cover sheet, a Historicals sheet with your statements, and one sheet per model.
 
-The workbook is a real, formula-driven model:
+The workbook is a formatted, formula-driven financial model:
+
+| Sheet | What it contains |
+|---|---|
+| Cover | Contents and colour legend |
+| Dashboard | KPI tiles, 4 native Excel charts, financial summary and valuation summary |
+| Assumptions | Forecast drivers by year, starting from 3-year historical averages |
+| Income Statement | Revenue to net income, actual and forecast, with margins |
+| Balance Sheet | Assets, liabilities and equity with a balance check |
+| Cash Flow | Operating, investing and financing cash flows and free cash flow |
+| DCF | Unlevered FCF from the statements, valuation bridge, implied multiples, EV and per-share sensitivities |
+| Ratios | Profitability, liquidity, leverage, returns and efficiency (actual and forecast) |
+| Model sheets | WACC, Comps, Monte Carlo, LBO, Loan, NPV / IRR, Break-even, Feasibility (as chosen) |
+| Historicals | Your uploaded statements (the source for green links) |
+
 - **Blue** cells are inputs. Change one and the whole model recalculates.
-- **Green** cells link to the Historicals sheet.
-- **Black** cells are formulas. Shaded cells are key outputs.
+- **Green** cells link to the source data. **Black** cells are formulas. Shaded cells are key outputs.
 
 The **Model Library** shows a detailed card for each model with example results. Clicking a model opens a step-by-step workspace (upload → assumptions & results → Excel download).
 

@@ -477,13 +477,17 @@ function ratios() {
       ['Revenue growth', pct(prevRev ? g('revenue') / prevRev - 1 : null)],
       ['Gross margin', pct(div(g('grossProfit'), g('revenue')))],
       ['EBITDA margin', pct(div(g('ebitda'), g('revenue')))],
+      ['EBIT margin', pct(div(g('ebit'), g('revenue')))],
       ['Net margin', pct(div(g('netIncome'), g('revenue')))],
       ['Current ratio', xf(div(g('currentAssets'), g('currentLiabilities')))],
       ['Debt / Equity', xf(div(g('debt'), g('equity')))],
       ['Debt / EBITDA', xf(div(g('debt'), g('ebitda')))],
+      ['Net debt / EBITDA', xf(g('debt') != null ? div(g('debt') - (g('cash') || 0), g('ebitda')) : null)],
       ['Interest coverage', xf(div(g('ebit'), g('interest')))],
       ['Return on assets', pct(div(g('netIncome'), g('totalAssets')))],
       ['Return on equity', pct(div(g('netIncome'), g('equity')))],
+      ['Asset turnover', xf(div(g('revenue'), g('totalAssets')))],
+      ['Free cash flow margin', pct(g('ocf') != null && g('capex') != null ? div(g('ocf') - Math.abs(g('capex')), g('revenue')) : null)],
       ['Cash conversion (OCF / NI)', xf(div(g('ocf'), g('netIncome')))],
     ];
   });
@@ -521,46 +525,52 @@ function exportPowerBI() {
 
 /* ---------- Models ---------- */
 function defaults() {
-  const rev = L('revenue') || 1_000_000;
-  const ebitda = L('ebitda') || rev * 0.2;
+  const dr = deriveDrivers(), op = openingBS(), rev = op.rev;
+  const p1 = (x) => +(x * 100).toFixed(1);
+  const ebitda = L('ebitda') || rev * (dr.gm - dr.opex);
+  const ly = state.years.at(-1);
   return {
-    rev, ebitda,
-    g: +((cagr(S('revenue')) ?? 0.05) * 100).toFixed(1),
-    m: +((ebitda / rev) * 100).toFixed(1),
-    da: +(((L('da') ?? rev * 0.03) / rev) * 100).toFixed(1),
-    capex: +(((L('capex') ?? rev * 0.04) / rev) * 100).toFixed(1),
-    netDebt: (L('debt') || 0) - (L('cash') || 0),
+    rev, ebitda, dr, op,
+    g: p1(dr.growth), m: p1(dr.gm - dr.opex), da: p1(dr.da), capex: p1(dr.capex), nwc: p1(dr.nca - dr.cl), tax: p1(dr.tax),
+    gm: p1(dr.gm), opexPct: p1(dr.opex), nca: p1(dr.nca), cl: p1(dr.cl), interest: p1(dr.rate), repay: dr.repay,
+    netDebt: op.debt - op.cash, nwc0: op.nwc,
     ni: L('netIncome') || ebitda * 0.5,
-    equity: L('equity') || rev,
-    debt: L('debt') || rev * 0.3,
-    interest: L('interest') && L('debt') ? +((L('interest') / L('debt')) * 100).toFixed(1) : 6,
+    equity: op.equity, debt: op.debt, cash: op.cash, loanAmt: op.debt || Math.round(rev * 0.3),
+    histLabel: ly ? `${String(ly).match(/(19|20)\d{2}/)?.[0] || ly}A` : 'Base',
   };
 }
 
+// Map model inputs (percent numbers) back to forecast drivers (fractions) for the 3-statement engine and Excel
+const driversFromForecast = (v) => ({ growth: v.g / 100, gm: v.gm / 100, opex: v.opex / 100, da: v.da / 100, capex: v.capex / 100, tax: v.tax / 100,
+  rate: v.rate / 100, nca: v.nca / 100, cl: v.cl / 100, repay: v.repay, payout: v.payout / 100 });
+const driversFromDCF = (v, base) => ({ ...base, growth: v.g / 100, opex: base.gm - v.m / 100, da: v.da / 100, capex: v.capex / 100, tax: v.tax / 100, nca: v.nwc / 100 + base.cl });
+
+// Unlevered DCF. Working capital is a % of revenue; the first year's change is measured against the actual
+// opening working capital (nwc0) when it is known.
 function dcfCore(v) {
-  const g = v.g / 100, m = v.m / 100, w = v.wacc / 100, tg = v.tg / 100, t = v.tax / 100;
-  let rev = v.rev, pv = 0, fcf = 0;
+  const g = v.g / 100, m = v.m / 100, w = v.wacc / 100, tg = v.tg / 100, t = v.tax / 100, nwcP = v.nwc / 100, n = Math.min(10, Math.max(1, Math.round(v.years)));
+  let rev = v.rev, nwcPrev = v.nwc0 ?? v.rev * nwcP, pv = 0, fcf = 0;
   const rows = [];
-  for (let y = 1; y <= v.years; y++) {
-    const prev = rev;
+  for (let y = 1; y <= n; y++) {
     rev *= 1 + g;
-    const ebitda = rev * m, da = rev * (v.da / 100), ebit = ebitda - da;
-    const capex = rev * (v.capex / 100), dnwc = (rev - prev) * (v.nwc / 100);
-    fcf = ebit * (1 - t) + da - capex - dnwc;
-    const p = fcf / Math.pow(1 + w, y);
+    const ebitda = rev * m, da = rev * (v.da / 100), ebit = ebitda - da, tax = ebit * t, nopat = ebit - tax;
+    const capex = rev * (v.capex / 100), nwc = rev * nwcP, dnwc = nwc - nwcPrev;
+    nwcPrev = nwc;
+    fcf = nopat + da - capex - dnwc;
+    const df = 1 / Math.pow(1 + w, y), p = fcf * df;
     pv += p;
-    rows.push({ y, rev, ebitda, ebit, capex, fcf, pv: p });
+    rows.push({ y, rev, ebitda, da, ebit, tax, nopat, capex, dnwc, fcf, df, pv: p });
   }
   if (w <= tg) return { error: 'WACC must be higher than terminal growth.' };
-  const tv = (fcf * (1 + tg)) / (w - tg), pvTv = tv / Math.pow(1 + w, v.years), ev = pv + pvTv;
-  return { rows, pv, tv, pvTv, ev, equity: ev - v.netDebt, perShare: (ev - v.netDebt) / v.shares };
+  const tv = (fcf * (1 + tg)) / (w - tg), pvTv = tv / Math.pow(1 + w, n), ev = pv + pvTv;
+  return { rows, pv, tv, pvTv, ev, equity: ev - v.netDebt, perShare: (ev - v.netDebt) / v.shares, exitMult: tv / rows.at(-1).ebitda };
 }
 
 // Shared by the Monte Carlo model and its Excel sheet
 function monteCarlo(v, d) {
   const n = Math.min(Math.max(100, v.sims), 20000), out = [];
   for (let i = 0; i < n; i++) {
-    const r = dcfCore({ rev: v.rev, g: v.g + randn() * v.gsd, m: v.m + randn() * v.msd, da: d.da, capex: d.capex, nwc: 10, tax: 25, wacc: v.wacc, tg: v.tg, years: 5, netDebt: v.netDebt, shares: 1 });
+    const r = dcfCore({ rev: v.rev, g: v.g + randn() * v.gsd, m: v.m + randn() * v.msd, da: d.da, capex: d.capex, nwc: d.nwc, nwc0: d.nwc0, tax: d.tax, wacc: v.wacc, tg: v.tg, years: 5, netDebt: v.netDebt, shares: 1 });
     if (!r.error) out.push(r.ev);
   }
   if (!out.length) return null;
@@ -568,33 +578,69 @@ function monteCarlo(v, d) {
   const q = (p) => out[Math.floor(p * (out.length - 1))];
   const bins = 24, lo = q(0.01), hi = q(0.99), w = (hi - lo) / bins || 1, hist = Array(bins).fill(0);
   out.forEach((x) => { const b = Math.floor((x - lo) / w); if (b >= 0 && b < bins) hist[b]++; });
-  const base = dcfCore({ ...v, da: d.da, capex: d.capex, nwc: 10, tax: 25, years: 5, shares: 1 }).ev;
-  return { out, q, hist, lo, w, base };
+  const base = dcfCore({ ...v, da: d.da, capex: d.capex, nwc: d.nwc, nwc0: d.nwc0, tax: d.tax, years: 5, shares: 1 }).ev;
+  const mean = out.reduce((a, b) => a + b, 0) / out.length, sd = Math.sqrt(out.reduce((a, b) => a + (b - mean) ** 2, 0) / out.length);
+  return { out, q, hist, lo, w, base, mean, sd };
+}
+
+const fyLabel = (t) => { const y = parseInt(String(state.years.at(-1) || '').match(/(19|20)\d{2}/)?.[0]); return y ? `${y + t}E` : `Y${t}`; };
+// Line items as rows, years as columns: [label, values, formatter?, bold?]
+const tableT = (cols, rows, hl) => table(['', ...cols], rows.map(([label, vals, f = fmt, bold]) => [bold ? `<strong>${label}</strong>` : label, ...vals.map((x) => (x == null ? '—' : f(x)))]), hl);
+const pctPts = (x) => `${x.toFixed(1)}%`;
+
+function lboCore(v) {
+  const ev0 = v.ebitda * v.entry, fees = ev0 * (v.fees / 100), debt0 = v.ebitda * v.lev, eq0 = ev0 + fees - debt0;
+  if (eq0 <= 0) return null;
+  let e = v.ebitda, debt = debt0, cash = 0;
+  const rows = [];
+  for (let y = 1; y <= v.years; y++) {
+    e *= 1 + v.g / 100;
+    const int = debt * (v.rate / 100), capex = e * (v.capex / 100);
+    const tax = Math.max(0, (e - int - capex) * (v.tax / 100));
+    const fcf = e - int - capex - tax;
+    const pay = Math.min(debt, Math.max(0, fcf * (v.sweep / 100)));
+    debt -= pay; cash += fcf - pay;
+    rows.push({ y, e, int, capex, tax, fcf, pay, debt, cash, eqv: e * v.exit - debt + cash, lev: debt / e, cov: int ? e / int : null });
+  }
+  const L1 = rows.at(-1), exitEq = L1.eqv, moic = exitEq / eq0;
+  const irrAt = (entry, exit) => { const q = (L1.e * exit - L1.debt + L1.cash) / (v.ebitda * entry * (1 + v.fees / 100) - debt0); return q > 0 && v.ebitda * entry * (1 + v.fees / 100) - debt0 > 0 ? Math.pow(q, 1 / v.years) - 1 : null; };
+  return { ev0, fees, debt0, eq0, rows, exitEq, moic, irr: Math.pow(Math.max(moic, 0), 1 / v.years) - 1, irrAt,
+    attr: { growth: (L1.e - v.ebitda) * v.entry, multiple: L1.e * (v.exit - v.entry), delever: debt0 - L1.debt + L1.cash, fees: -fees } };
 }
 
 const MODELS = [
   {
     id: 'dcf', name: 'DCF Valuation', group: 'Valuation',
-    desc: 'Discounted cash flow: projects free cash flow, then discounts it back at WACC to find what the business is worth today.',
+    desc: 'Discounted cash flow: projects unlevered free cash flow, then discounts it at WACC to find what the business is worth today.',
     inputs: (d) => [['rev', 'Base revenue ($)', d.rev], ['g', 'Revenue growth %', d.g], ['m', 'EBITDA margin %', d.m], ['da', 'D&A % of revenue', d.da],
-      ['capex', 'CapEx % of revenue', d.capex], ['nwc', 'Working capital % of new revenue', 10], ['tax', 'Tax rate %', 25], ['wacc', 'WACC %', 10],
-      ['tg', 'Terminal growth %', 2.5], ['years', 'Forecast years', 5], ['netDebt', 'Net debt ($)', d.netDebt], ['shares', 'Shares outstanding', 1_000_000]],
-    run(v) {
+      ['capex', 'CapEx % of revenue', d.capex], ['nwc', 'Net working capital % of revenue', d.nwc], ['tax', 'Tax rate %', d.tax], ['wacc', 'WACC %', 10],
+      ['tg', 'Terminal growth %', 2.5], ['years', 'Forecast years', 5], ['netDebt', 'Net debt ($)', d.netDebt], ['shares', 'Shares outstanding', 1_000_000], ['price', 'Current share price ($, optional)', 0]],
+    run(v, d) {
+      v = { ...v, nwc0: d.nwc0 };
       const r = dcfCore(v);
       if (r.error) return { html: `<div class="glass card">${r.error}</div>` };
       const ws = [-2, -1, 0, 1, 2].map((x) => v.wacc + x), gs = [-1, -0.5, 0, 0.5, 1].map((x) => v.tg + x);
-      const sens = ws.map((w) => [`${w.toFixed(1)}%`, ...gs.map((g) => { const s = dcfCore({ ...v, wacc: w, tg: g }); return s.error ? 'n/a' : fmt(s.ev); })]);
+      const grid = (f) => ws.map((w) => [pctPts(w), ...gs.map((g) => { const s = dcfCore({ ...v, wacc: w, tg: g }); return s.error ? 'n/a' : f(s); })]);
       const scen = [['Bear', -3, -3], ['Base', 0, 0], ['Bull', 3, 3]].map(([n, dg, dm]) => {
         const s = dcfCore({ ...v, g: v.g + dg, m: v.m + dm });
-        return [n, `${(v.g + dg).toFixed(1)}%`, `${(v.m + dm).toFixed(1)}%`, fmt(s.ev), fmt(s.equity), fmt(s.perShare)];
+        return [n, pctPts(v.g + dg), pctPts(v.m + dm), fmt(s.ev), fmt(s.equity), fmt(s.perShare)];
       });
+      const up = v.price > 0 ? r.perShare / v.price - 1 : null, cols = r.rows.map((x) => fyLabel(x.y)), col = (k) => r.rows.map((x) => x[k]);
+      const center = (ri, ci) => ri === 2 && ci === 3;
       return {
-        html: `<div class="kpis">${kpi('Enterprise value', fmt(r.ev))}${kpi('Equity value', fmt(r.equity))}${kpi('Value per share', fmt(r.perShare))}${kpi('Terminal value share', pct(r.pvTv / r.ev), 'of enterprise value')}</div>
+        html: `<div class="kpis">${kpi('Enterprise value', fmt(r.ev))}${kpi('Equity value', fmt(r.equity))}${kpi('Value per share', fmt(r.perShare), up == null ? 'Add a share price to see upside' : `${up >= 0 ? '▲' : '▼'} ${pct(Math.abs(up))} vs current price`, up == null ? '' : up >= 0 ? 'up' : 'down')}
+          ${kpi('Implied EV / EBITDA', xf(d.ebitda ? r.ev / d.ebitda : null), 'on last actual EBITDA')}${kpi('Implied exit multiple', xf(r.exitMult), 'terminal value / final-year EBITDA')}${kpi('Terminal value share', pct(r.pvTv / r.ev), 'of enterprise value')}</div>
         <div class="glass card"><h3>Free cash flow projection</h3><div class="chart"><canvas id="mc1"></canvas></div></div>
-        <div class="glass card"><h3>Projection table</h3>${table(['Year', 'Revenue', 'EBITDA', 'EBIT', 'CapEx', 'Free cash flow', 'PV of FCF'], r.rows.map((x) => [`Y${x.y}`, fmt(x.rev), fmt(x.ebitda), fmt(x.ebit), fmt(x.capex), fmt(x.fcf), fmt(x.pv)]))}</div>
-        <div class="glass card"><h3>Sensitivity: enterprise value (WACC ↓ × terminal growth →)</h3>${table(['WACC \\ g', ...gs.map((g) => g.toFixed(1) + '%')], sens, (ri, ci) => ri === 2 && ci === 3)}</div>
-        <div class="glass card"><h3>Scenarios</h3>${table(['Scenario', 'Growth', 'Margin', 'EV', 'Equity', 'Per share'], scen)}</div>`,
-        charts: [['mc1', { type: 'bar', data: { labels: r.rows.map((x) => `Y${x.y}`), datasets: [ds('Free cash flow', r.rows.map((x) => x.fcf), COLORS.blue), ds('Present value', r.rows.map((x) => x.pv), COLORS.green)] }, options: { scales: { y: moneyAxis } } }]],
+        <div class="glass card"><h3>Unlevered free cash flow build</h3>${tableT(cols, [['Revenue', col('rev')], ['EBITDA', col('ebitda')], ['Less: D&A', col('da')], ['EBIT', col('ebit'), fmt, true], ['Less: taxes on EBIT', col('tax')], ['NOPAT', col('nopat'), fmt, true], ['Add: D&A', col('da')], ['Less: CapEx', col('capex')], ['Less: increase in working capital', col('dnwc')], ['Unlevered free cash flow', col('fcf'), fmt, true], ['Discount factor', col('df'), (x) => x.toFixed(4)], ['Present value', col('pv'), fmt, true]])}</div>
+        <div class="grid two">
+          <div class="glass card"><h3>Valuation bridge</h3>${table(['Item', 'Value'], [['Sum of PV of free cash flows', fmt(r.pv)], ['PV of terminal value', fmt(r.pvTv)], ['<strong>Enterprise value</strong>', fmt(r.ev)], ['Less: net debt', fmt(v.netDebt)], ['<strong>Equity value</strong>', fmt(r.equity)], ['Shares outstanding', fmt(v.shares, false)], ['<strong>Value per share</strong>', fmt(r.perShare)], ['Terminal value (undiscounted)', fmt(r.tv)]])}</div>
+          <div class="glass card"><h3>Scenarios</h3>${table(['Scenario', 'Growth', 'Margin', 'EV', 'Equity', 'Per share'], scen)}</div>
+        </div>
+        <div class="grid two">
+          <div class="glass card"><h3>Enterprise value: WACC ↓ × terminal growth →</h3>${table(['WACC \\ g', ...gs.map(pctPts)], grid((s) => fmt(s.ev)), center)}</div>
+          <div class="glass card"><h3>Value per share: WACC ↓ × terminal growth →</h3>${table(['WACC \\ g', ...gs.map(pctPts)], grid((s) => fmt(s.perShare)), center)}</div>
+        </div>`,
+        charts: [['mc1', { type: 'bar', data: { labels: cols, datasets: [ds('Unlevered FCF', col('fcf'), COLORS.blue), ds('Present value', col('pv'), COLORS.green)] }, options: { scales: { y: moneyAxis } } }]],
       };
     },
   },
@@ -606,13 +652,19 @@ const MODELS = [
     run(v) {
       const flows = [-Math.abs(v.inv), ...list(v.flows)], r = v.rate / 100;
       const n = npv(r, flows), i = irr(flows), pv = npv(r, [0, ...flows.slice(1)]);
-      let cum = 0;
-      const cumArr = flows.map((f) => (cum += f));
+      let cum = 0, dcum = 0;
+      const cumArr = flows.map((f) => (cum += f)), dArr = flows.map((f, t) => (dcum += f / Math.pow(1 + r, t)));
+      const rates = [0, 5, 10, 15, 20, 25];
       return {
-        html: `<div class="kpis">${kpi('NPV', fmt(n), n >= 0 ? 'Creates value ✓' : 'Destroys value ✗', n >= 0 ? 'up' : 'down')}${kpi('IRR', pct(i), i != null && i > r ? 'Above hurdle rate' : 'Below hurdle rate', i != null && i > r ? 'up' : 'down')}${kpi('MIRR', pct(mirr(flows, r, v.reinv / 100)))}${kpi('Payback', yrs(payback(flows)))}${kpi('Discounted payback', yrs(payback(flows, r)))}${kpi('Profitability index', xf(pv / Math.abs(v.inv)))}</div>
-        <div class="glass card"><h3>Cumulative cash flow</h3><div class="chart"><canvas id="mc1"></canvas></div></div>
-        <div class="glass card">${table(['Year', 'Cash flow', 'Discounted', 'Cumulative'], flows.map((f, t) => [t, fmt(f), fmt(f / Math.pow(1 + r, t)), fmt(cumArr[t])]))}</div>`,
-        charts: [['mc1', { data: { labels: flows.map((_, t) => `Y${t}`), datasets: [ds('Cash flow', flows, COLORS.blue, { type: 'bar' }), ds('Cumulative', cumArr, COLORS.green, { type: 'line' })] }, options: { scales: { y: moneyAxis } } }]],
+        html: `<div class="kpis">${kpi('NPV', fmt(n), n >= 0 ? 'Creates value ✓' : 'Destroys value ✗', n >= 0 ? 'up' : 'down')}${kpi('IRR', pct(i), i != null && i > r ? 'Above hurdle rate' : 'Below hurdle rate', i != null && i > r ? 'up' : 'down')}${kpi('MIRR', pct(mirr(flows, r, v.reinv / 100)))}${kpi('Payback', yrs(payback(flows)))}${kpi('Discounted payback', yrs(payback(flows, r)))}${kpi('Profitability index', xf(pv / Math.abs(v.inv)))}${kpi('Total net cash', fmt(cum), 'undiscounted')}</div>
+        <div class="grid two">
+          <div class="glass card"><h3>Cumulative cash flow</h3><div class="chart"><canvas id="mc1"></canvas></div></div>
+          <div class="glass card"><h3>NPV profile</h3><div class="chart"><canvas id="mc2"></canvas></div></div>
+        </div>
+        <div class="glass card"><h3>Cash flow schedule</h3>${tableT(flows.map((_, t) => `Year ${t}`), [['Cash flow', flows, fmt, true], ['Discount factor', flows.map((_, t) => 1 / Math.pow(1 + r, t)), (x) => x.toFixed(4)], ['Discounted cash flow', flows.map((f, t) => f / Math.pow(1 + r, t))], ['Cumulative cash flow', cumArr], ['Cumulative discounted', dArr]])}</div>
+        <div class="glass card"><h3>NPV at different discount rates</h3>${table(['Discount rate', ...rates.map((x) => x + '%')], [['NPV', ...rates.map((x) => fmt(npv(x / 100, flows)))]])}</div>`,
+        charts: [['mc1', { data: { labels: flows.map((_, t) => `Y${t}`), datasets: [ds('Cash flow', flows, COLORS.blue, { type: 'bar' }), ds('Cumulative', cumArr, COLORS.green, { type: 'line' })] }, options: { scales: { y: moneyAxis } } }],
+          ['mc2', { type: 'line', data: { labels: Array.from({ length: 31 }, (_, k) => k + '%'), datasets: [ds('NPV', Array.from({ length: 31 }, (_, k) => npv(k / 100, flows)), COLORS.purple)] }, options: { scales: { y: moneyAxis }, plugins: { legend: { display: false } } } }]],
       };
     },
   },
@@ -620,42 +672,44 @@ const MODELS = [
     id: 'lbo', name: 'LBO', group: 'Deals & financing',
     desc: 'Leveraged buyout: buy the company mostly with debt, pay the debt down with cash flow, then sell. Shows the investor return.',
     inputs: (d) => [['ebitda', 'Entry EBITDA ($)', Math.round(d.ebitda)], ['entry', 'Entry multiple (x EBITDA)', 8], ['lev', 'Debt (x EBITDA)', 4.5], ['rate', 'Interest rate %', 8],
-      ['g', 'EBITDA growth %', Math.max(3, d.g)], ['exit', 'Exit multiple (x EBITDA)', 8], ['years', 'Holding period (years)', 5], ['tax', 'Tax rate %', 25],
+      ['g', 'EBITDA growth %', Math.max(3, d.g)], ['exit', 'Exit multiple (x EBITDA)', 8], ['years', 'Holding period (years)', 5], ['tax', 'Tax rate %', d.tax],
       ['capex', 'CapEx % of EBITDA', 15], ['sweep', 'Cash used to repay debt %', 100], ['fees', 'Transaction fees % of EV', 2]],
     run(v) {
-      const ev0 = v.ebitda * v.entry, debt0 = v.ebitda * v.lev, eq0 = ev0 * (1 + v.fees / 100) - debt0;
-      if (eq0 <= 0) return { html: '<div class="glass card">Debt is larger than the purchase price. Lower the debt multiple.</div>' };
-      let e = v.ebitda, debt = debt0, cash = 0;
-      const rows = [];
-      for (let y = 1; y <= v.years; y++) {
-        e *= 1 + v.g / 100;
-        const int = debt * (v.rate / 100), capex = e * (v.capex / 100);
-        const tax = Math.max(0, (e - int - capex) * (v.tax / 100));
-        const fcf = e - int - capex - tax;
-        const pay = Math.min(debt, Math.max(0, fcf * (v.sweep / 100)));
-        debt -= pay; cash += fcf - pay;
-        rows.push({ y, e, int, fcf, pay, debt, eqv: e * v.exit - debt + cash });
-      }
-      const exitEq = rows.at(-1).eqv, moic = exitEq / eq0, ir = Math.pow(Math.max(moic, 0), 1 / v.years) - 1;
+      const L = lboCore(v);
+      if (!L) return { html: '<div class="glass card">Debt is larger than the purchase price. Lower the debt multiple.</div>' };
+      const cols = ['Entry', ...L.rows.map((x) => fyLabel(x.y))], c = (k, first = null) => [first, ...L.rows.map((x) => x[k])];
+      const entries = [-1, -0.5, 0, 0.5, 1].map((x) => v.entry + x), exits = [-2, -1, 0, 1, 2].map((x) => v.exit + x);
+      const total = L.attr.growth + L.attr.multiple + L.attr.delever + L.attr.fees;
       return {
-        html: `<div class="kpis">${kpi('Purchase price (EV)', fmt(ev0))}${kpi('Equity invested', fmt(eq0))}${kpi('Exit equity', fmt(exitEq))}${kpi('IRR', pct(ir), ir >= 0.2 ? 'Meets typical 20% PE target' : 'Below typical 20% PE target', ir >= 0.2 ? 'up' : 'down')}${kpi('MOIC', xf(moic))}</div>
+        html: `<div class="kpis">${kpi('Purchase price (EV)', fmt(L.ev0))}${kpi('Equity invested', fmt(L.eq0))}${kpi('Exit equity', fmt(L.exitEq))}${kpi('IRR', pct(L.irr), L.irr >= 0.2 ? 'Meets typical 20% PE target' : 'Below typical 20% PE target', L.irr >= 0.2 ? 'up' : 'down')}${kpi('MOIC', xf(L.moic))}${kpi('Debt repaid', fmt(L.debt0 - L.rows.at(-1).debt), `${pct((L.debt0 - L.rows.at(-1).debt) / L.debt0)} of entry debt`)}</div>
+        <div class="grid two">
+          <div class="glass card"><h3>Sources &amp; uses</h3>${table(['Uses', 'Amount', 'Sources', 'Amount'], [['Purchase price', fmt(L.ev0), 'Debt', fmt(L.debt0)], ['Transaction fees', fmt(L.fees), 'Sponsor equity', fmt(L.eq0)], ['<strong>Total uses</strong>', fmt(L.ev0 + L.fees), '<strong>Total sources</strong>', fmt(L.debt0 + L.eq0)]])}</div>
+          <div class="glass card"><h3>Returns attribution</h3>${table(['Value driver', 'Amount', 'Share'], [['EBITDA growth', fmt(L.attr.growth), pct(L.attr.growth / total)], ['Multiple expansion', fmt(L.attr.multiple), pct(L.attr.multiple / total)], ['Debt paydown and cash', fmt(L.attr.delever), pct(L.attr.delever / total)], ['Transaction fees', fmt(L.attr.fees), pct(L.attr.fees / total)], ['<strong>Equity value created</strong>', fmt(total), '100.0%']])}</div>
+        </div>
         <div class="glass card"><h3>Debt paydown vs equity value</h3><div class="chart"><canvas id="mc1"></canvas></div></div>
-        <div class="glass card"><h3>Debt schedule</h3>${table(['Year', 'EBITDA', 'Interest', 'Free cash flow', 'Debt repaid', 'Debt balance', 'Equity value'], rows.map((x) => [`Y${x.y}`, fmt(x.e), fmt(x.int), fmt(x.fcf), fmt(x.pay), fmt(x.debt), fmt(x.eqv)]))}</div>`,
-        charts: [['mc1', { type: 'bar', data: { labels: ['Entry', ...rows.map((x) => `Y${x.y}`)], datasets: [ds('Debt', [debt0, ...rows.map((x) => x.debt)], COLORS.orange, { stack: 's' }), ds('Equity value', [eq0, ...rows.map((x) => x.eqv)], COLORS.green, { stack: 's' })] }, options: { scales: { y: { ...moneyAxis, stacked: true }, x: { stacked: true } } } }]],
+        <div class="glass card"><h3>Debt schedule and credit statistics</h3>${tableT(cols, [['EBITDA', c('e', v.ebitda)], ['Interest', c('int')], ['CapEx', c('capex')], ['Taxes', c('tax')], ['Free cash flow', c('fcf'), fmt, true], ['Debt repaid', c('pay')], ['Debt balance', c('debt', L.debt0), fmt, true], ['Cash balance', c('cash', 0)], ['Debt / EBITDA', c('lev', v.lev), xf], ['EBITDA / interest', c('cov'), xf], ['Equity value at exit multiple', c('eqv', L.eq0), fmt, true]])}</div>
+        <div class="glass card"><h3>IRR sensitivity: entry multiple ↓ × exit multiple →</h3>${table(['Entry \\ Exit', ...exits.map((x) => x.toFixed(1) + 'x')], entries.map((en) => [en.toFixed(1) + 'x', ...exits.map((ex) => pct(L.irrAt(en, ex)))]), (ri, ci) => ri === 2 && ci === 3)}</div>`,
+        charts: [['mc1', { type: 'bar', data: { labels: cols, datasets: [ds('Debt', [L.debt0, ...L.rows.map((x) => x.debt)], COLORS.orange, { stack: 's' }), ds('Equity value', [L.eq0, ...L.rows.map((x) => x.eqv)], COLORS.green, { stack: 's' })] }, options: { scales: { y: { ...moneyAxis, stacked: true }, x: { stacked: true } } } }]],
       };
     },
   },
   {
     id: 'wacc', name: 'WACC', group: 'Valuation',
     desc: 'Weighted average cost of capital: the blended return that lenders and shareholders expect. Use it as the discount rate in the DCF.',
-    inputs: (d) => [['E', 'Equity value ($)', Math.round(d.equity)], ['D', 'Debt value ($)', Math.round(d.debt)], ['rf', 'Risk-free rate %', 4.2], ['beta', 'Beta', 1.1],
-      ['mrp', 'Market risk premium %', 5.5], ['sp', 'Size / specific premium %', 1], ['kd', 'Pre-tax cost of debt %', d.interest], ['tax', 'Tax rate %', 25]],
+    inputs: (d) => [['E', 'Equity value ($)', Math.round(d.equity)], ['D', 'Debt value ($)', Math.round(d.debt)], ['rf', 'Risk-free rate %', 4.2], ['beta', 'Levered beta', 1.1],
+      ['mrp', 'Market risk premium %', 5.5], ['sp', 'Size / specific premium %', 1], ['kd', 'Pre-tax cost of debt %', d.interest], ['tax', 'Tax rate %', d.tax]],
     run(v) {
-      const ke = (v.rf + v.beta * v.mrp + v.sp) / 100, kd = (v.kd / 100) * (1 - v.tax / 100), V = v.E + v.D;
-      const w = (v.E / V) * ke + (v.D / V) * kd;
+      const V = v.E + v.D, kd = (v.kd / 100) * (1 - v.tax / 100);
+      const wacc = (beta, mrp) => (v.E / V) * ((v.rf + beta * mrp + v.sp) / 100) + (v.D / V) * kd;
+      const ke = (v.rf + v.beta * v.mrp + v.sp) / 100, w = wacc(v.beta, v.mrp), bu = v.E ? v.beta / (1 + (1 - v.tax / 100) * (v.D / v.E)) : null;
+      const betas = [-0.2, -0.1, 0, 0.1, 0.2].map((x) => v.beta + x), mrps = [-1, -0.5, 0, 0.5, 1].map((x) => v.mrp + x);
       return {
-        html: `<div class="kpis">${kpi('WACC', pct(w, 2))}${kpi('Cost of equity (CAPM)', pct(ke, 2))}${kpi('After-tax cost of debt', pct(kd, 2))}${kpi('Debt weight', pct(v.D / V))}</div>
-        <div class="glass card"><h3>Capital structure</h3><div class="chart"><canvas id="mc1"></canvas></div></div>`,
+        html: `<div class="kpis">${kpi('WACC', pct(w, 2))}${kpi('Cost of equity (CAPM)', pct(ke, 2))}${kpi('After-tax cost of debt', pct(kd, 2))}${kpi('Debt weight (D / V)', pct(v.D / V))}${kpi('Unlevered beta', bu == null ? '—' : bu.toFixed(2), 'asset beta, Hamada formula')}${kpi('Debt / equity', xf(v.E ? v.D / v.E : null))}</div>
+        <div class="grid two">
+          <div class="glass card"><h3>Capital structure</h3><div class="chart"><canvas id="mc1"></canvas></div></div>
+          <div class="glass card"><h3>Build-up</h3>${table(['Component', 'Value'], [['Risk-free rate', pctPts(v.rf)], ['Beta × market risk premium', pctPts(v.beta * v.mrp)], ['Size / specific premium', pctPts(v.sp)], ['<strong>Cost of equity</strong>', pct(ke, 2)], ['Pre-tax cost of debt', pctPts(v.kd)], ['Tax shield', pct(-(v.kd / 100) * (v.tax / 100), 2)], ['<strong>After-tax cost of debt</strong>', pct(kd, 2)], ['<strong>WACC</strong>', pct(w, 2)]])}</div>
+        </div>
+        <div class="glass card"><h3>WACC sensitivity: beta ↓ × market risk premium →</h3>${table(['Beta \\ MRP', ...mrps.map(pctPts)], betas.map((b) => [b.toFixed(2), ...mrps.map((m) => pct(wacc(b, m), 2))]), (ri, ci) => ri === 2 && ci === 3)}</div>`,
         charts: [['mc1', { type: 'doughnut', data: { labels: ['Equity', 'Debt'], datasets: [{ data: [v.E, v.D], backgroundColor: [COLORS.green, COLORS.orange], borderWidth: 0 }] }, options: { cutout: '65%' } }]],
       };
     },
@@ -666,18 +720,22 @@ const MODELS = [
     inputs: (d) => [['rev', 'Company revenue ($)', Math.round(d.rev)], ['ebitda', 'Company EBITDA ($)', Math.round(d.ebitda)], ['ni', 'Company net income ($)', Math.round(d.ni)],
       ['netDebt', 'Net debt ($)', Math.round(d.netDebt)], ['evE', 'Peer EV/EBITDA', '7.5, 8.2, 9.0, 10.1, 11.4', 'text'], ['evS', 'Peer EV/Sales', '1.1, 1.4, 1.6, 1.9', 'text'], ['pe', 'Peer P/E', '14, 16.5, 18, 21', 'text']],
     run(v) {
+      const mean = (a) => a.reduce((s, x) => s + x, 0) / a.length;
       const rows = [['EV / EBITDA', list(v.evE), v.ebitda, false], ['EV / Sales', list(v.evS), v.rev, false], ['P / E', list(v.pe), v.ni, true]]
         .filter((r) => r[1].length)
         .map(([n, m, base, isEq]) => {
           const toEq = (x) => (isEq ? x * base : x * base - v.netDebt);
-          return { n, lo: toEq(Math.min(...m)), med: toEq(median(m)), hi: toEq(Math.max(...m)), mm: median(m) };
+          return { n, m: [Math.min(...m), median(m), mean(m), Math.max(...m)], eq: [Math.min(...m), median(m), mean(m), Math.max(...m)].map(toEq), count: m.length };
         });
-      const mid = rows.length ? median(rows.map((r) => r.med)) : null;
+      const mid = rows.length ? median(rows.map((r) => r.eq[1])) : null, avg = rows.length ? mean(rows.map((r) => r.eq[2])) : null;
       return {
-        html: `<div class="kpis">${kpi('Implied equity value (median)', fmt(mid))}${rows.map((r) => kpi(r.n + ' median', xf(r.mm))).join('')}</div>
+        html: `<div class="kpis">${kpi('Implied equity value (median)', fmt(mid))}${kpi('Implied equity value (mean)', fmt(avg))}${rows.map((r) => kpi(r.n + ' median', xf(r.m[1]), `${r.count} peers`)).join('')}</div>
         <div class="glass card"><h3>Valuation range (football field)</h3><div class="chart"><canvas id="mc1"></canvas></div></div>
-        <div class="glass card">${table(['Method', 'Low', 'Median', 'High'], rows.map((r) => [r.n, fmt(r.lo), fmt(r.med), fmt(r.hi)]))}</div>`,
-        charts: [['mc1', { type: 'bar', data: { labels: rows.map((r) => r.n), datasets: [ds('Equity value range', rows.map((r) => [r.lo, r.hi]), COLORS.purple)] }, options: { indexAxis: 'y', scales: { x: moneyAxis }, plugins: { legend: { display: false } } } }]],
+        <div class="grid two">
+          <div class="glass card"><h3>Peer multiples</h3>${table(['Method', 'Low', 'Median', 'Mean', 'High'], rows.map((r) => [r.n, ...r.m.map(xf)]))}</div>
+          <div class="glass card"><h3>Implied equity value</h3>${table(['Method', 'Low', 'Median', 'Mean', 'High'], rows.map((r) => [r.n, ...r.eq.map((x) => fmt(x))]))}</div>
+        </div>`,
+        charts: [['mc1', { type: 'bar', data: { labels: rows.map((r) => r.n), datasets: [ds('Equity value range', rows.map((r) => [r.eq[0], r.eq[3]]), COLORS.purple)] }, options: { indexAxis: 'y', scales: { x: moneyAxis }, plugins: { legend: { display: false } } } }]],
       };
     },
   },
@@ -689,10 +747,11 @@ const MODELS = [
     run(v, d) {
       const mc = monteCarlo(v, d);
       if (!mc) return { html: '<div class="glass card">WACC must be higher than terminal growth.</div>' };
-      const { out, q, hist, lo, w, base } = mc;
+      const { out, q, hist, lo, w, base, mean, sd } = mc;
       return {
-        html: `<div class="kpis">${kpi('P10 (downside)', fmt(q(0.1)))}${kpi('P50 (median)', fmt(q(0.5)))}${kpi('P90 (upside)', fmt(q(0.9)))}${kpi('Chance above base case', pct(out.filter((x) => x > base).length / out.length, 0), `Base EV ${fmt(base)}`)}</div>
-        <div class="glass card"><h3>Distribution of enterprise value (${out.length} runs)</h3><div class="chart"><canvas id="mc1"></canvas></div></div>`,
+        html: `<div class="kpis">${kpi('P10 (downside)', fmt(q(0.1)))}${kpi('P50 (median)', fmt(q(0.5)))}${kpi('P90 (upside)', fmt(q(0.9)))}${kpi('Mean', fmt(mean), `std. dev. ${fmt(sd)}`)}${kpi('Chance above base case', pct(out.filter((x) => x > base).length / out.length, 0), `Base EV ${fmt(base)}`)}</div>
+        <div class="glass card"><h3>Distribution of enterprise value (${out.length} runs)</h3><div class="chart"><canvas id="mc1"></canvas></div></div>
+        <div class="glass card"><h3>Percentiles of enterprise value</h3>${table(['Statistic', 'P5', 'P10', 'P25', 'P50', 'P75', 'P90', 'P95'], [['Enterprise value', ...[0.05, 0.1, 0.25, 0.5, 0.75, 0.9, 0.95].map((p) => fmt(q(p)))], ['Equity value', ...[0.05, 0.1, 0.25, 0.5, 0.75, 0.9, 0.95].map((p) => fmt(q(p) - v.netDebt))]])}</div>`,
         charts: [['mc1', { type: 'bar', data: { labels: hist.map((_, i) => String(fmt(lo + w * (i + 0.5)))), datasets: [ds('Simulations', hist, COLORS.teal, { barPercentage: 1, categoryPercentage: 1 })] }, options: { plugins: { legend: { display: false } } } }]],
       };
     },
@@ -706,16 +765,18 @@ const MODELS = [
       if (cm <= 0) return { html: '<div class="glass card">Price must be higher than variable cost.</div>' };
       const be = v.fixed / cm, profit = v.units * cm - v.fixed, mos = (v.units - be) / v.units;
       const max = Math.max(be * 2, v.units * 1.2), pts = Array.from({ length: 11 }, (_, i) => (max / 10) * i);
+      const vols = [0.5, 0.75, 1, 1.25, 1.5].map((k) => v.units * k);
       return {
-        html: `<div class="kpis">${kpi('Break-even units', Math.ceil(be).toLocaleString())}${kpi('Break-even revenue', fmt(be * v.price))}${kpi('Expected profit', fmt(profit), '', profit >= 0 ? 'up' : 'down')}${kpi('Margin of safety', pct(mos), '', mos >= 0 ? 'up' : 'down')}${kpi('Operating leverage', profit > 0 ? xf((v.units * cm) / profit) : '—')}</div>
-        <div class="glass card"><h3>Revenue vs total cost</h3><div class="chart"><canvas id="mc1"></canvas></div></div>`,
+        html: `<div class="kpis">${kpi('Break-even units', Math.ceil(be).toLocaleString())}${kpi('Break-even revenue', fmt(be * v.price))}${kpi('Expected profit', fmt(profit), '', profit >= 0 ? 'up' : 'down')}${kpi('Margin of safety', pct(mos), '', mos >= 0 ? 'up' : 'down')}${kpi('Contribution margin', pct(cm / v.price), `${fmt(cm)} per unit`)}${kpi('Operating leverage', profit > 0 ? xf((v.units * cm) / profit) : '—')}</div>
+        <div class="glass card"><h3>Revenue vs total cost</h3><div class="chart"><canvas id="mc1"></canvas></div></div>
+        <div class="glass card"><h3>Profit at different sales volumes</h3>${tableT(['50%', '75%', 'Plan', '125%', '150%'], [['Units sold', vols, (x) => Math.round(x).toLocaleString()], ['Revenue', vols.map((u) => u * v.price)], ['Variable costs', vols.map((u) => u * v.vc)], ['Fixed costs', vols.map(() => v.fixed)], ['Profit', vols.map((u) => u * cm - v.fixed), fmt, true], ['Profit margin', vols.map((u) => (u * cm - v.fixed) / (u * v.price)), pct]], (ri, ci) => ci === 3)}</div>`,
         charts: [['mc1', { type: 'line', data: { labels: pts.map((u) => Math.round(u).toLocaleString()), datasets: [ds('Revenue', pts.map((u) => u * v.price), COLORS.green), ds('Total cost', pts.map((u) => v.fixed + u * v.vc), COLORS.red), ds('Fixed cost', pts.map(() => v.fixed), COLORS.orange, { borderDash: [6, 4] })] }, options: { scales: { y: moneyAxis } } }]],
       };
     },
   },
   {
     id: 'ratios', name: 'Ratio Analysis', group: 'Performance',
-    desc: 'Profitability, liquidity, leverage and return ratios calculated from your uploaded statements for every year.',
+    desc: 'Profitability, liquidity, leverage, efficiency and return ratios calculated from your uploaded statements for every year.',
     inputs: () => [],
     run() {
       if (!hasData()) return { html: '<div class="glass card empty"><h3>Upload statements to see ratios</h3><a class="btn" href="#upload">Upload data</a></div>' };
@@ -724,50 +785,50 @@ const MODELS = [
     },
   },
   {
-    id: 'forecast', name: '3-Statement Forecast', group: 'Performance',
-    desc: 'Projects the income statement forward from your history, with simple cash and debt roll-forward.',
-    inputs: (d) => [['rev', 'Base revenue ($)', Math.round(d.rev)], ['g', 'Revenue growth %', d.g], ['gm', 'Gross margin %', hasData() && L('grossProfit') ? +((L('grossProfit') / L('revenue')) * 100).toFixed(1) : 40],
-      ['opex', 'Operating expenses % of revenue', hasData() && L('opex') ? +((L('opex') / L('revenue')) * 100).toFixed(1) : 20], ['da', 'D&A % of revenue', d.da], ['capex', 'CapEx % of revenue', d.capex],
-      ['debt', 'Opening debt ($)', Math.round(d.debt)], ['repay', 'Debt repaid per year ($)', Math.round(d.debt / 10)], ['rate', 'Interest rate %', d.interest], ['cash', 'Opening cash ($)', Math.round(L('cash') || 0)], ['tax', 'Tax rate %', 25], ['years', 'Years', 5]],
-    run(v) {
-      let rev = v.rev, debt = v.debt, cash = v.cash;
-      const rows = [];
-      const y0 = parseInt(String(state.years.at(-1) || '').match(/\d{4}/)?.[0]) || new Date().getFullYear();
-      for (let y = 1; y <= v.years; y++) {
-        rev *= 1 + v.g / 100;
-        const gp = rev * (v.gm / 100), ebitda = gp - rev * (v.opex / 100), da = rev * (v.da / 100), int = debt * (v.rate / 100);
-        const ebt = ebitda - da - int, ni = ebt - Math.max(0, ebt * (v.tax / 100));
-        const pay = Math.min(debt, v.repay);
-        cash += ni + da - rev * (v.capex / 100) - pay;
-        debt -= pay;
-        rows.push([`${y0 + y}E`, rev, gp, ebitda, ni, cash, debt]);
-      }
-      const hist = hasData() ? state.years.map((y, i) => [y, S('revenue')[i]]) : [];
+    id: 'forecast', name: '3-Statement Model', group: 'Performance',
+    desc: 'Linked income statement, balance sheet and cash flow forecast. Drivers start from your 3-year historical averages, and the balance sheet always balances.',
+    inputs: (d) => [['years', 'Forecast years', 5], ['g', 'Revenue growth %', d.g], ['gm', 'Gross margin %', d.gm], ['opex', 'Operating expenses % of revenue', d.opexPct], ['da', 'D&A % of revenue', d.da],
+      ['capex', 'CapEx % of revenue', d.capex], ['tax', 'Tax rate %', d.tax], ['rate', 'Interest rate on debt %', d.interest], ['nca', 'Non-cash current assets % of revenue', d.nca],
+      ['cl', 'Current liabilities % of revenue', d.cl], ['repay', 'Debt repaid per year ($)', d.repay], ['payout', 'Dividend payout % of net income', 0]],
+    run(v, d) {
+      const n = Math.min(10, Math.max(1, Math.round(v.years))), Y = project3(driversFromForecast(v), d.op, n);
+      const cols = [d.histLabel, ...Y.map((_, t) => fyLabel(t + 1))], H = hasData() ? histIS().at(-1) : {}, op = d.op;
+      const c = (k, first = null) => [first, ...Y.map((y) => y[k])];
+      const bal = Math.max(...Y.map((y) => Math.abs(y.check)));
+      const hy = hasData() ? state.years : [], hv = (k) => (hasData() ? S(k) : []);
       return {
-        html: `<div class="glass card"><h3>Revenue: history and forecast</h3><div class="chart"><canvas id="mc1"></canvas></div></div>
-        <div class="glass card">${table(['Year', 'Revenue', 'Gross profit', 'EBITDA', 'Net income', 'Cash', 'Debt'], rows.map((r) => [r[0], ...r.slice(1).map((x) => fmt(x))]))}</div>`,
-        charts: [['mc1', { type: 'bar', data: { labels: [...hist.map((h) => h[0]), ...rows.map((r) => r[0])], datasets: [ds('Historical', [...hist.map((h) => h[1]), ...rows.map(() => null)], COLORS.blue), ds('Forecast', [...hist.map(() => null), ...rows.map((r) => r[1])], COLORS.purple), ds('Net income', [...hist.map((_, i) => S('netIncome')?.[i] ?? null), ...rows.map((r) => r[4])], COLORS.green, { type: 'line' })] }, options: { scales: { y: moneyAxis } } }]],
+        html: `<div class="kpis">${kpi(`Revenue ${cols.at(-1)}`, fmt(Y.at(-1).rev), `${pct(Math.pow(Y.at(-1).rev / op.rev, 1 / n) - 1)} CAGR`)}${kpi('EBITDA', fmt(Y.at(-1).ebitda), `${pct(Y.at(-1).ebitda / Y.at(-1).rev)} margin`)}${kpi('Net income', fmt(Y.at(-1).ni), `${pct(Y.at(-1).ni / Y.at(-1).rev)} margin`)}${kpi('Closing cash', fmt(Y.at(-1).cash))}${kpi('Closing debt', fmt(Y.at(-1).debt))}${kpi('Balance check', bal < 1 ? 'Balanced ✓' : fmt(bal), 'assets = liabilities + equity', bal < 1 ? 'up' : 'down')}</div>
+        <div class="grid two">
+          <div class="glass card"><h3>Revenue and profit</h3><div class="chart"><canvas id="mc1"></canvas></div></div>
+          <div class="glass card"><h3>Cash and debt</h3><div class="chart"><canvas id="mc2"></canvas></div></div>
+        </div>
+        <div class="glass card"><h3>Income statement</h3>${tableT(cols, [['Revenue', c('rev', H.rev)], ['Cost of goods sold', c('cogs', H.cogs)], ['Gross profit', c('gp', H.gp), fmt, true], ['Operating expenses', c('opex', H.opex)], ['EBITDA', c('ebitda', H.ebitda), fmt, true], ['Depreciation & amortization', c('da', H.da)], ['EBIT', c('ebit', H.ebit), fmt, true], ['Interest expense', c('int', H.int)], ['Profit before tax', c('pbt', H.pbt)], ['Taxes', c('tax', H.tax)], ['Net income', c('ni', H.ni), fmt, true]])}</div>
+        <div class="glass card"><h3>Balance sheet</h3>${tableT(cols, [['Cash', c('cash', op.cash)], ['Non-cash current assets', c('noncash', op.nca)], ['Total current assets', c('tca', op.ca), fmt, true], ['Non-current assets', c('ppe', op.ppe)], ['Total assets', c('ta', op.ta), fmt, true], ['Current liabilities', c('cl', op.cl)], ['Total debt', c('debt', op.debt)], ['Other liabilities', c('other', op.other)], ['Total liabilities', c('tl', op.cl + op.debt + op.other), fmt, true], ["Shareholders' equity", c('eq', op.equity)], ['Total liabilities & equity', c('tle', op.ta), fmt, true], ['Balance check', c('check', 0)]])}</div>
+        <div class="glass card"><h3>Cash flow statement</h3>${tableT(cols, [['Net income', c('ni')], ['Depreciation & amortization', c('da')], ['Change in non-cash current assets', c('dnca')], ['Change in current liabilities', c('dcl')], ['Cash from operations', c('cfo', hasData() ? L('ocf') : null), fmt, true], ['Capital expenditure', c('capex', hasData() && L('capex') != null ? -L('capex') : null)], ['Cash from investing', c('cfi'), fmt, true], ['Debt repayment', c('repay')], ['Dividends', c('div')], ['Cash from financing', c('cff'), fmt, true], ['Net change in cash', c('net')], ['Closing cash', c('cash', op.cash), fmt, true], ['Free cash flow', c('fcf'), fmt, true]])}</div>`,
+        charts: [['mc1', { data: { labels: [...hy, ...Y.map((_, t) => fyLabel(t + 1))], datasets: [ds('Revenue', [...hv('revenue'), ...Y.map((y) => y.rev)], COLORS.blue, { type: 'bar' }), ds('EBITDA', [...hv('ebitda'), ...Y.map((y) => y.ebitda)], COLORS.green, { type: 'bar' }), ds('Net income', [...hv('netIncome'), ...Y.map((y) => y.ni)], COLORS.purple, { type: 'line' })] }, options: { scales: { y: moneyAxis } } }],
+          ['mc2', { type: 'line', data: { labels: cols, datasets: [ds('Cash', c('cash', op.cash), COLORS.green), ds('Debt', c('debt', op.debt), COLORS.orange)] }, options: { scales: { y: moneyAxis } } }]],
       };
     },
   },
   {
     id: 'loan', name: 'Loan Schedule', group: 'Deals & financing',
-    desc: 'Amortizing loan: monthly payment, total interest and the balance over time.',
-    inputs: (d) => [['P', 'Loan amount ($)', Math.round(d.debt)], ['rate', 'Annual interest rate %', d.interest], ['years', 'Term (years)', 7], ['ppy', 'Payments per year', 12]],
+    desc: 'Amortizing loan: payment per period, total interest, effective rate and the balance over time.',
+    inputs: (d) => [['P', 'Loan amount ($)', Math.round(d.loanAmt)], ['rate', 'Annual interest rate %', d.interest], ['years', 'Term (years)', 7], ['ppy', 'Payments per year', 12]],
     run(v) {
       const n = v.years * v.ppy, r = v.rate / 100 / v.ppy, pmt = r ? (v.P * r) / (1 - Math.pow(1 + r, -n)) : v.P / n;
       let bal = v.P;
       const rows = [];
       for (let y = 1; y <= v.years; y++) {
+        const open = bal;
         let int = 0, prin = 0;
         for (let k = 0; k < v.ppy; k++) { const i = bal * r; int += i; prin += pmt - i; bal -= pmt - i; }
-        rows.push([`Y${y}`, pmt * v.ppy, int, prin, Math.max(0, bal)]);
+        rows.push([`Y${y}`, open, pmt * v.ppy, int, prin, Math.max(0, bal)]);
       }
       return {
-        html: `<div class="kpis">${kpi('Payment', fmt(pmt), `${v.ppy}× per year`)}${kpi('Total interest', fmt(pmt * n - v.P))}${kpi('Total paid', fmt(pmt * n))}</div>
+        html: `<div class="kpis">${kpi('Payment per period', fmt(pmt), `${v.ppy}× per year`)}${kpi('Annual debt service', fmt(pmt * v.ppy))}${kpi('Total interest', fmt(pmt * n - v.P), `${pct((pmt * n - v.P) / v.P)} of the loan`)}${kpi('Total paid', fmt(pmt * n))}${kpi('Effective annual rate', pct(Math.pow(1 + r, v.ppy) - 1, 2), `${n} payments`)}</div>
         <div class="glass card"><h3>Balance and interest</h3><div class="chart"><canvas id="mc1"></canvas></div></div>
-        <div class="glass card">${table(['Year', 'Paid', 'Interest', 'Principal', 'End balance'], rows.map((r) => [r[0], ...r.slice(1).map((x) => fmt(x))]))}</div>`,
-        charts: [['mc1', { data: { labels: rows.map((r) => r[0]), datasets: [ds('Principal', rows.map((r) => r[3]), COLORS.blue, { type: 'bar', stack: 'p' }), ds('Interest', rows.map((r) => r[2]), COLORS.orange, { type: 'bar', stack: 'p' }), ds('Balance', rows.map((r) => r[4]), COLORS.green, { type: 'line' })] }, options: { scales: { y: moneyAxis } } }]],
+        <div class="glass card"><h3>Annual schedule</h3>${table(['Year', 'Opening balance', 'Paid', 'Interest', 'Principal', 'Closing balance'], rows.map((x) => [x[0], ...x.slice(1).map((y) => fmt(y))]))}</div>`,
+        charts: [['mc1', { data: { labels: rows.map((x) => x[0]), datasets: [ds('Principal', rows.map((x) => x[4]), COLORS.blue, { type: 'bar', stack: 'p' }), ds('Interest', rows.map((x) => x[3]), COLORS.orange, { type: 'bar', stack: 'p' }), ds('Balance', rows.map((x) => x[5]), COLORS.green, { type: 'line' })] }, options: { scales: { y: moneyAxis } } }]],
       };
     },
   },
@@ -916,8 +977,8 @@ const CATALOG = [
     outputs: ['Growth, margin, liquidity and leverage ratios', 'Return on assets and equity', 'Every year side by side'],
     needs: 'Income statement and balance sheet (cash flow optional)', best: 'Credit reviews and benchmarking.' },
   { id: 'forecast', group: 'Performance', file: '3-statement-forecast.xlsx',
-    outputs: ['Projected revenue, EBITDA and net income', 'Cash and debt roll-forward', 'History vs forecast chart'],
-    needs: 'Income statement, plus opening cash and debt', best: 'Budgets and business plans.' },
+    outputs: ['Linked income statement, balance sheet and cash flow', 'Drivers from 3-year historical averages', 'Balance check, free cash flow, closing cash and debt'],
+    needs: 'Income statement and balance sheet (cash flow optional)', best: 'Budgets, business plans and lender models.' },
   { id: 'dashboard', group: 'Reporting', file: 'powerbi-dataset.xlsx', href: '#dashboard', cta: 'Open dashboard',
     title: 'Dashboard & Power BI Export', desc: 'An interactive, Power BI-style view of your statements, with a one-click dataset for Power BI Desktop.',
     outputs: ['KPI cards, trends, margins and a profit bridge', 'Year and metric filters, plus a full financial matrix', 'Power BI dataset: FactFinancials and Ratios tables'],
@@ -1028,7 +1089,7 @@ function renderWorkspace(id) {
 }
 
 /* ---------- Excel model builder page ---------- */
-const BUILD_IDS = ['dcf', 'comps', 'wacc', 'montecarlo', 'lbo', 'loan', 'npv', 'breakeven', 'feasibility', 'ratios', 'forecast'];
+const BUILD_IDS = ['dcf', 'comps', 'wacc', 'montecarlo', 'lbo', 'loan', 'npv', 'breakeven', 'feasibility'];
 let buildSel = new Set(BUILD_IDS);
 
 function renderBuild() {
@@ -1050,7 +1111,7 @@ function renderBuild() {
 function updateBuildSummary() {
   const n = buildSel.size;
   $('#buildSummary').textContent = n
-    ? `Your workbook will contain a Cover sheet, a Historicals sheet and ${n} model sheet${n > 1 ? 's' : ''}: ${BUILD_IDS.filter((id) => buildSel.has(id)).map((id) => XL_MODELS[id].sheet).join(', ')}.`
+    ? `Always included: Cover, Dashboard (with charts), Assumptions, Income Statement, Balance Sheet, Cash Flow, Ratios and Historicals. Plus ${n} model sheet${n > 1 ? 's' : ''}: ${BUILD_IDS.filter((id) => buildSel.has(id)).map((id) => XL_MODELS[id].sheet).join(', ')}.`
     : 'Choose at least one model in step 2.';
   $('#buildBtn').disabled = !n;
 }
