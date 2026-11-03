@@ -537,6 +537,8 @@ function defaults() {
     ni: L('netIncome') || ebitda * 0.5,
     equity: op.equity, debt: op.debt, cash: op.cash, loanAmt: op.debt || Math.round(rev * 0.3),
     histLabel: ly ? `${String(ly).match(/(19|20)\d{2}/)?.[0] || ly}A` : 'Base',
+    rf: marketRf()?.value ?? 4.2,
+    bench: chosenBenchmark(),
   };
 }
 
@@ -607,6 +609,9 @@ function lboCore(v) {
   return { ev0, fees, debt0, eq0, rows, exitEq, moic, irr: Math.pow(Math.max(moic, 0), 1 / v.years) - 1, irrAt,
     attr: { growth: (L1.e - v.ebitda) * v.entry, multiple: L1.e * (v.exit - v.entry), delever: debt0 - L1.debt + L1.cash, fees: -fees } };
 }
+
+// Five illustrative peer multiples spread around an industry benchmark (or the default list)
+const peerList = (m, fallback) => (m ? [0.8, 0.9, 1, 1.1, 1.2].map((k) => (m * k).toFixed(1)).join(', ') : fallback);
 
 const MODELS = [
   {
@@ -696,7 +701,7 @@ const MODELS = [
   {
     id: 'wacc', name: 'WACC', group: 'Valuation',
     desc: 'Weighted average cost of capital: the blended return that lenders and shareholders expect. Use it as the discount rate in the DCF.',
-    inputs: (d) => [['E', 'Equity value ($)', Math.round(d.equity)], ['D', 'Debt value ($)', Math.round(d.debt)], ['rf', 'Risk-free rate %', 4.2], ['beta', 'Levered beta', 1.1],
+    inputs: (d) => [['E', 'Equity value ($)', Math.round(d.equity)], ['D', 'Debt value ($)', Math.round(d.debt)], ['rf', 'Risk-free rate %', +d.rf.toFixed(2)], ['beta', 'Levered beta', d.bench?.beta ?? 1.1],
       ['mrp', 'Market risk premium %', 5.5], ['sp', 'Size / specific premium %', 1], ['kd', 'Pre-tax cost of debt %', d.interest], ['tax', 'Tax rate %', d.tax]],
     run(v) {
       const V = v.E + v.D, kd = (v.kd / 100) * (1 - v.tax / 100);
@@ -718,7 +723,7 @@ const MODELS = [
     id: 'comps', name: 'Comparables', group: 'Valuation',
     desc: 'Values the company using the multiples that similar listed companies trade at. Enter peer multiples separated by commas.',
     inputs: (d) => [['rev', 'Company revenue ($)', Math.round(d.rev)], ['ebitda', 'Company EBITDA ($)', Math.round(d.ebitda)], ['ni', 'Company net income ($)', Math.round(d.ni)],
-      ['netDebt', 'Net debt ($)', Math.round(d.netDebt)], ['evE', 'Peer EV/EBITDA', '7.5, 8.2, 9.0, 10.1, 11.4', 'text'], ['evS', 'Peer EV/Sales', '1.1, 1.4, 1.6, 1.9', 'text'], ['pe', 'Peer P/E', '14, 16.5, 18, 21', 'text']],
+      ['netDebt', 'Net debt ($)', Math.round(d.netDebt)], ['evE', 'Peer EV/EBITDA', peerList(d.bench?.evEbitda, '7.5, 8.2, 9.0, 10.1, 11.4'), 'text'], ['evS', 'Peer EV/Sales', peerList(d.bench?.evSales, '1.1, 1.4, 1.6, 1.9'), 'text'], ['pe', 'Peer P/E', peerList(d.bench?.pe, '14, 16.5, 18, 21'), 'text']],
     run(v) {
       const mean = (a) => a.reduce((s, x) => s + x, 0) / a.length;
       const rows = [['EV / EBITDA', list(v.evE), v.ebitda, false], ['EV / Sales', list(v.evS), v.rev, false], ['P / E', list(v.pe), v.ni, true]]
@@ -1130,6 +1135,7 @@ function renderLibrary() {
   if (!$('#quickTags').innerHTML) $('#quickTags').innerHTML = ['DCF', 'LBO', '3 statement', 'WACC', 'Break-even', 'Feasibility'].map((t) => `<button type="button" data-q="${t}">${t}</button>`).join('');
   if (!$('#sectors').innerHTML) renderSectors();
   if (!$('#stages').innerHTML) renderStages();
+  if (!$('#companies').innerHTML) renderCompanies();
 }
 
 /* ---------- Sector sample companies ---------- */
@@ -1142,6 +1148,14 @@ const SECTORS = [
   { name: 'Energy & Utilities', company: 'Brightvale Energy', text: 'Regulated, predictable revenue with heavy investment in long-lived assets.', rev: 210e6, g: 0.03, gm: 0.42, opex: 0.14, da: 0.08, capex: 0.11, ta: 2.2, ca: 0.2, debt: 0.45, cl: 0.1, rate: 0.055 },
   { name: 'Restaurants & Hospitality', company: 'Copper Table Group', text: 'Multi-site food and drink business with high labour costs and lease commitments.', rev: 52e6, g: 0.07, gm: 0.66, opex: 0.53, da: 0.04, capex: 0.05, ta: 0.7, ca: 0.2, debt: 0.35, cl: 0.12, rate: 0.07 },
   { name: 'Logistics & Transport', company: 'Swiftlane Logistics', text: 'Fleet-based delivery with low gross margins and steady volume growth.', rev: 95e6, g: 0.08, gm: 0.24, opex: 0.13, da: 0.05, capex: 0.06, ta: 0.8, ca: 0.35, debt: 0.35, cl: 0.14, rate: 0.065 },
+  { name: 'Semiconductors', company: 'Quanta Silicon', text: 'Chip design with very high gross margins and heavy R&D spending.', rev: 120e6, g: 0.16, gm: 0.6, opex: 0.32, da: 0.05, capex: 0.08, ta: 1.4, ca: 0.55, debt: 0.08, cl: 0.12, rate: 0.055, bench: 'semis' },
+  { name: 'Pharmaceuticals', company: 'Halcyon Therapeutics', text: 'Patented medicines with high margins and large research budgets.', rev: 160e6, g: 0.07, gm: 0.72, opex: 0.4, da: 0.04, capex: 0.04, ta: 1.6, ca: 0.4, debt: 0.2, cl: 0.15, rate: 0.055, bench: 'pharma' },
+  { name: 'Automotive', company: 'Redline Motors', text: 'Vehicle manufacturing with thin margins and heavy capital spending.', rev: 420e6, g: 0.06, gm: 0.17, opex: 0.07, da: 0.04, capex: 0.06, ta: 1.1, ca: 0.4, debt: 0.35, cl: 0.2, rate: 0.065, bench: 'auto' },
+  { name: 'Telecom', company: 'Northline Telecom', text: 'Subscription network services, stable cash flows and high debt.', rev: 300e6, g: 0.02, gm: 0.58, opex: 0.21, da: 0.15, capex: 0.16, ta: 2.6, ca: 0.12, debt: 0.45, cl: 0.12, rate: 0.055, bench: 'telecom' },
+  { name: 'Media & Entertainment', company: 'Brightframe Studios', text: 'Content and streaming revenue with lumpy production costs.', rev: 140e6, g: 0.06, gm: 0.4, opex: 0.22, da: 0.06, capex: 0.04, ta: 1.5, ca: 0.3, debt: 0.3, cl: 0.18, rate: 0.065, bench: 'media' },
+  { name: 'Food & Beverages', company: 'Meadowbrook Foods', text: 'Branded staples with steady demand and strong pricing power.', rev: 260e6, g: 0.05, gm: 0.45, opex: 0.27, da: 0.035, capex: 0.04, ta: 1.0, ca: 0.3, debt: 0.3, cl: 0.16, rate: 0.055, bench: 'beverages' },
+  { name: 'Aerospace & Defense', company: 'Vantage Aerospace', text: 'Long-cycle contracts, large backlogs and moderate margins.', rev: 230e6, g: 0.05, gm: 0.2, opex: 0.07, da: 0.03, capex: 0.03, ta: 1.2, ca: 0.5, debt: 0.25, cl: 0.25, rate: 0.06, bench: 'aerospace' },
+  { name: 'Construction & Engineering', company: 'Keystone Builders', text: 'Project-based revenue with low margins and working-capital swings.', rev: 180e6, g: 0.07, gm: 0.14, opex: 0.05, da: 0.015, capex: 0.02, ta: 0.6, ca: 0.6, debt: 0.2, cl: 0.3, rate: 0.065, bench: 'construction' },
 ];
 
 // Five years of statements consistent with the sector's typical economics
@@ -1178,7 +1192,58 @@ function renderSectors() {
 function loadSector(i) {
   const p = SECTORS[i];
   applyRows(sectorRows(p), `${p.company} (sample)`, 1, null, `${p.name} sample`);
+  const bench = p.bench || SECTOR_BENCHMARK[p.name];
+  if (bench) savePref('fs-bench', bench);
   location.hash = '#build';
+}
+
+/* ---------- Real companies (SEC EDGAR via /api/company) ---------- */
+const COMPANIES = [
+  ['AAPL', 'Apple', 'Technology', 'hardware'], ['MSFT', 'Microsoft', 'Technology', 'software'], ['NVDA', 'NVIDIA', 'Technology', 'semis'], ['GOOGL', 'Alphabet', 'Technology', 'internet'],
+  ['META', 'Meta Platforms', 'Technology', 'internet'], ['AVGO', 'Broadcom', 'Technology', 'semis'], ['ORCL', 'Oracle', 'Technology', 'software'], ['ADBE', 'Adobe', 'Technology', 'software'],
+  ['CRM', 'Salesforce', 'Technology', 'software'], ['AMD', 'AMD', 'Technology', 'semis'], ['INTC', 'Intel', 'Technology', 'semis'],
+  ['AMZN', 'Amazon', 'Consumer', 'online-retail'], ['WMT', 'Walmart', 'Consumer', 'retail'], ['COST', 'Costco', 'Consumer', 'retail'], ['HD', 'Home Depot', 'Consumer', 'retail'],
+  ['NKE', 'Nike', 'Consumer', 'apparel'], ['MCD', 'McDonald’s', 'Consumer', 'restaurants'], ['SBUX', 'Starbucks', 'Consumer', 'restaurants'], ['MAR', 'Marriott', 'Consumer', 'hotels'],
+  ['KO', 'Coca-Cola', 'Consumer staples', 'beverages'], ['PEP', 'PepsiCo', 'Consumer staples', 'beverages'], ['PG', 'Procter & Gamble', 'Consumer staples', 'household'],
+  ['JNJ', 'Johnson & Johnson', 'Healthcare', 'pharma'], ['LLY', 'Eli Lilly', 'Healthcare', 'pharma'], ['PFE', 'Pfizer', 'Healthcare', 'pharma'], ['ABT', 'Abbott Laboratories', 'Healthcare', 'meddevices'], ['UNH', 'UnitedHealth Group', 'Healthcare', 'healthcare-services'],
+  ['XOM', 'ExxonMobil', 'Energy', 'oilgas'], ['CVX', 'Chevron', 'Energy', 'oilgas'], ['NEE', 'NextEra Energy', 'Energy', 'utilities'], ['DUK', 'Duke Energy', 'Energy', 'utilities'],
+  ['CAT', 'Caterpillar', 'Industrials', 'industrial'], ['DE', 'Deere & Company', 'Industrials', 'industrial'], ['BA', 'Boeing', 'Industrials', 'aerospace'], ['LMT', 'Lockheed Martin', 'Industrials', 'aerospace'],
+  ['TSLA', 'Tesla', 'Industrials', 'auto'], ['GM', 'General Motors', 'Industrials', 'auto'], ['UPS', 'UPS', 'Industrials', 'logistics'], ['DOW', 'Dow', 'Materials', 'chemicals'],
+  ['DIS', 'Disney', 'Communication', 'media'], ['NFLX', 'Netflix', 'Communication', 'media'], ['VZ', 'Verizon', 'Communication', 'telecom'], ['T', 'AT&T', 'Communication', 'telecom'],
+  ['PLD', 'Prologis', 'Real estate', 'reit'], ['O', 'Realty Income', 'Real estate', 'reit'],
+];
+let coGroup = 'All';
+function renderCompanies() {
+  const groups = ['All', ...new Set(COMPANIES.map((c) => c[2]))];
+  $('#coTabs').innerHTML = groups.map((g) => `<button data-cogroup="${g}" class="${g === coGroup ? 'on' : ''}">${g}<span>${g === 'All' ? COMPANIES.length : COMPANIES.filter((c) => c[2] === g).length}</span></button>`).join('');
+  $('#companies').innerHTML = COMPANIES.filter((c) => coGroup === 'All' || c[2] === coGroup).map(([t, name, group, bench]) => `<button class="company" type="button" data-ticker="${t}" data-bench="${bench}">
+      <span class="co-mark">${t}</span><span class="co-name"><strong>${esc(name)}</strong><span>${esc(BENCHMARKS.find((b) => b.id === bench)?.name || group)}</span></span><span class="co-go" aria-hidden="true">→</span></button>`).join('');
+}
+
+async function loadCompany(ticker, bench) {
+  ticker = ticker.trim().toUpperCase();
+  if (!ticker) return;
+  const m = $('#tickerMsg');
+  m.className = 'upload-msg small';
+  m.textContent = `Loading ${ticker} from SEC filings…`;
+  $$('.company').forEach((b) => b.classList.toggle('loading', b.dataset.ticker === ticker));
+  try {
+    const res = await fetch(`/api/company?ticker=${encodeURIComponent(ticker)}`, { headers: { Accept: 'application/json' } });
+    const isJson = /json/.test(res.headers.get('content-type') || '');
+    const j = isJson ? await res.json() : null;
+    if (!j) throw new Error('Real company data needs the site’s Netlify Functions, so it works on the deployed site (deploy from GitHub), not on a static copy.');
+    if (!res.ok) throw new Error(j.error || 'Company data unavailable.');
+    if (applyRows(j.rows, `${j.name} (${j.ticker})`, 1, null, `SEC 10-K filings ${j.years[0]}–${j.years.at(-1)}`)) {
+      if (bench) savePref('fs-bench', bench);
+      m.className = 'upload-msg small ok';
+      m.textContent = `Loaded ${j.name}: ${j.years.length} fiscal years from SEC filings.`;
+      location.hash = '#build';
+    }
+  } catch (e) {
+    m.className = 'upload-msg small err';
+    m.textContent = e.message;
+  }
+  $$('.company').forEach((b) => b.classList.remove('loading'));
 }
 
 /* ---------- Business stages ---------- */
@@ -1294,14 +1359,32 @@ async function buildExcel() {
   }
 }
 
+/* ---------- Colour schemes ---------- */
+const SCHEMES = [['classic', 'Classic ivory', '#1c1c1a'], ['navy', 'Navy', '#14305a'], ['emerald', 'Emerald', '#1d5c3f'], ['burgundy', 'Burgundy', '#6b1f2e'], ['slate', 'Slate blue', '#3a4a6b'], ['dark', 'Dark', '#121211']];
+const currentScheme = () => document.documentElement.dataset.scheme || 'classic';
+function renderThemeMenu() {
+  const cur = currentScheme();
+  $('#themeMenu').innerHTML = `<p>Colour scheme</p>${SCHEMES.map(([id, name, c]) => `<button type="button" data-scheme="${id}" class="${id === cur ? 'on' : ''}"><i style="background:${c}"></i>${name}</button>`).join('')}`;
+  $('#themeSwatch').style.background = SCHEMES.find((x) => x[0] === cur)[2];
+}
+function setScheme(id) {
+  if (id === 'classic') delete document.documentElement.dataset.scheme; else document.documentElement.dataset.scheme = id;
+  try { localStorage.setItem('fs-scheme', id); } catch (e) {}
+  $('#themeMenu').hidden = true;
+  renderThemeMenu();
+  themeCharts();
+  route();
+}
+
 /* ---------- Routing & init ---------- */
 function route() {
   const [view, arg] = (location.hash || '#library').slice(1).split('/');
-  const v = view === 'model' ? 'workspace' : ['build', 'library', 'dashboard', 'upload', 'feasibility'].includes(view) ? view : 'library';
+  const v = view === 'model' ? 'workspace' : ['build', 'library', 'dashboard', 'indicators', 'upload', 'feasibility'].includes(view) ? view : 'library';
   $$('.view').forEach((el) => el.classList.toggle('active', el.id === `view-${v}`));
   $$('nav a').forEach((a) => a.classList.toggle('active', a.dataset.view === (v === 'workspace' ? 'library' : v)));
   $('#companyPill').textContent = hasData() ? state.company : 'No data loaded';
   if (v === 'build') renderBuild();
+  if (v === 'indicators') { renderIndicators(); loadMarket(); }
   if (v === 'library') renderLibrary();
   if (v === 'workspace') renderWorkspace(arg);
   if (v === 'dashboard') renderDashboard();
@@ -1365,6 +1448,9 @@ function init() {
     if (!e.target.closest('[data-clear-filter]')) return;
     query = ''; stageFilter = null; $('#searchInput').value = ''; renderLibrary();
   });
+  $('#coTabs').addEventListener('click', (e) => { const b = e.target.closest('[data-cogroup]'); if (b) { coGroup = b.dataset.cogroup; renderCompanies(); } });
+  $('#companies').addEventListener('click', (e) => { const b = e.target.closest('[data-ticker]'); if (b) loadCompany(b.dataset.ticker, b.dataset.bench); });
+  $('#tickerForm').addEventListener('submit', (e) => { e.preventDefault(); const t = $('#tickerInput').value.trim().toUpperCase(); loadCompany(t, COMPANIES.find((c) => c[0] === t)?.[3]); });
   $('#sectors').addEventListener('click', (e) => { const b = e.target.closest('[data-sector]'); if (b) loadSector(+b.dataset.sector); });
   $('#stages').addEventListener('click', (e) => {
     const b = e.target.closest('[data-stage]');
@@ -1412,7 +1498,16 @@ function init() {
   $('#printReport').addEventListener('click', () => window.print());
   $('#dlReport').addEventListener('click', downloadReport);
 
-  matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => { themeCharts(); route(); });
+  renderThemeMenu();
+  initIndicators();
+  initChat();
+  $('#themeBtn').addEventListener('click', (e) => {
+    e.stopPropagation();
+    const m = $('#themeMenu'); m.hidden = !m.hidden;
+    $('#themeBtn').setAttribute('aria-expanded', String(!m.hidden));
+  });
+  $('#themeMenu').addEventListener('click', (e) => { const b = e.target.closest('[data-scheme]'); if (b) setScheme(b.dataset.scheme); });
+  document.addEventListener('click', (e) => { if (!e.target.closest('.theme-pick')) $('#themeMenu').hidden = true; });
   window.addEventListener('hashchange', () => { route(); window.scrollTo(0, 0); });
   route();
 }

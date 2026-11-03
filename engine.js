@@ -17,7 +17,8 @@ function histIS() {
   const n = state.years.length, at = (a, i) => (a ? a[i] : null);
   const rev = S('revenue'), cogs = absS('cogs'), opex = absS('opex'), da = absS('da'), int = absS('interest'), ni = S('netIncome');
   return Array.from({ length: n }, (_, i) => {
-    const ebit = at(S('ebit'), i), pbt = ebit != null && at(int, i) != null ? ebit - at(int, i) : null;
+    // When interest isn't reported separately, treat it as zero so the effective tax rate can still be measured
+    const ebit = at(S('ebit'), i), pbt = ebit != null && at(ni, i) != null ? ebit - (at(int, i) ?? 0) : null;
     return { rev: at(rev, i), cogs: at(cogs, i), gp: at(S('grossProfit'), i), opex: at(opex, i), ebitda: at(S('ebitda'), i), da: at(da, i),
       ebit, int: at(int, i), pbt, tax: pbt != null && at(ni, i) != null ? pbt - at(ni, i) : null, ni: at(ni, i) };
   });

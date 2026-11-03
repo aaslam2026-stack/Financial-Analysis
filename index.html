@@ -9,6 +9,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Source+Serif+4:opsz,wght@8..60,500;8..60,600&display=swap">
   <link rel="stylesheet" href="styles.css">
+  <script>try { const t = localStorage.getItem('fs-scheme'); if (t && t !== 'classic') document.documentElement.dataset.scheme = t; } catch (e) {}</script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 </head>
@@ -20,10 +21,15 @@
         <a href="#library" data-view="library">Models</a>
         <a href="#build" data-view="build">Build Excel Model</a>
         <a href="#dashboard" data-view="dashboard">Dashboard</a>
+        <a href="#indicators" data-view="indicators">Indicators</a>
         <a href="#feasibility" data-view="feasibility">Feasibility</a>
         <a href="#upload" data-view="upload">My Data</a>
       </nav>
       <div class="company-pill" id="companyPill">No data loaded</div>
+      <div class="theme-pick">
+        <button class="theme-btn" id="themeBtn" type="button" aria-haspopup="true" aria-expanded="false"><i id="themeSwatch"></i><span>Theme</span></button>
+        <div class="theme-menu" id="themeMenu" hidden></div>
+      </div>
       <button class="menu-btn" id="menuBtn" aria-label="Open menu" aria-expanded="false"><span></span><span></span><span></span></button>
     </div>
   </header>
@@ -62,6 +68,18 @@
         <div class="sec-head"><h2>Financial model examples from any sector</h2></div>
         <p class="sec-lead">Open a sample company with typical figures for its industry, then build any model from it.</p>
         <div class="sectors" id="sectors"></div>
+      </section>
+
+      <section class="home-sec" id="companiesSec">
+        <div class="sec-head"><h2>Real company models</h2></div>
+        <p class="sec-lead">Build any model from a public company’s actual annual reports (SEC 10-K filings), from Apple and NVIDIA to Walmart and ExxonMobil.</p>
+        <form class="ticker-form" id="tickerForm">
+          <input id="tickerInput" placeholder="Any US-listed ticker, e.g. AAPL, MSFT, TSLA" aria-label="Ticker symbol" autocomplete="off" maxlength="10">
+          <button class="btn" type="submit">Load company</button>
+          <span class="upload-msg small" id="tickerMsg" role="status"></span>
+        </form>
+        <div class="cat-tabs" id="coTabs"></div>
+        <div class="companies" id="companies"></div>
       </section>
 
       <section class="home-sec">
@@ -235,6 +253,29 @@
       </div>
     </section>
 
+    <!-- INDICATORS -->
+    <section id="view-indicators" class="view">
+      <header class="page-head">
+        <p class="eyebrow">Markets &amp; economy</p>
+        <h1>Indicators &amp; Benchmarks</h1>
+        <p class="muted">Live interest rates and economic indicators, what they mean for your assumptions, and industry benchmarks to sense-check your company.</p>
+      </header>
+      <div class="ind-status" id="indStatus"></div>
+      <div class="glass card" id="indUse"></div>
+      <h2 class="ind-h">Interest rates</h2>
+      <div class="ind-grid" id="indRates"></div>
+      <div class="glass card" id="yieldWrap" hidden><h3>Treasury yield curve</h3><div class="chart"><canvas id="chYield"></canvas></div></div>
+      <h2 class="ind-h">Economy</h2>
+      <div class="ind-grid" id="indEconomy"></div>
+      <h2 class="ind-h">Markets</h2>
+      <div class="ind-grid" id="indMarkets"></div>
+      <h2 class="ind-h" id="benchmarks">Industry benchmarks</h2>
+      <p class="muted small bench-note">Indicative US industry figures, rounded from published industry datasets (for example NYU Stern / Damodaran, January 2025). Use them to sense-check assumptions, and confirm against the latest source before relying on a specific number.</p>
+      <div class="glass card" id="benchCompare"></div>
+      <div class="slicers bench-tools glass"><div class="field grow"><label for="benchSearch">Search industries</label><input id="benchSearch" type="search" placeholder="e.g. software, retail, utilities"></div><div class="cat-tabs" id="benchGroups"></div></div>
+      <div class="glass card" id="benchTable"></div>
+    </section>
+
     <!-- FEASIBILITY -->
     <section id="view-feasibility" class="view">
       <header class="page-head">
@@ -250,12 +291,32 @@
     </section>
   </main>
 
+  <button class="chat-fab" id="chatFab" type="button" aria-expanded="false" aria-controls="chatPanel">
+    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z"/><path d="M8.5 11h7M8.5 14h4"/></svg>
+    <span>Ask the AI analyst</span>
+  </button>
+  <section class="chat-panel" id="chatPanel" hidden aria-label="AI financial analyst">
+    <header class="chat-head">
+      <div><strong>AI financial analyst</strong><span>Answers using your company and models</span></div>
+      <div class="row tight-row"><button class="link" id="chatClear" type="button">New chat</button><button class="chat-x" id="chatClose" type="button" aria-label="Close">×</button></div>
+    </header>
+    <div class="chat-log" id="chatLog" aria-live="polite"></div>
+    <form class="chat-form" id="chatForm">
+      <textarea id="chatInput" rows="2" placeholder="Ask about your numbers, a model or the market…" aria-label="Your question"></textarea>
+      <button class="btn" id="chatSend" type="submit">Send</button>
+    </form>
+    <p class="chat-note" id="chatNote"></p>
+  </section>
+
   <footer class="site-foot">
     <div>Finance Studio · Models are planning tools based on the data and assumptions you provide, not investment advice.</div>
   </footer>
 
   <script src="app.js"></script>
   <script src="engine.js"></script>
+  <script src="benchmarks.js"></script>
+  <script src="indicators.js"></script>
+  <script src="chat.js"></script>
   <script src="excel.js"></script>
 </body>
 </html>
