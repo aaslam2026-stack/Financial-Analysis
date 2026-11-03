@@ -26,6 +26,10 @@ export const TAGS = {
   ltdTotal: ['LongTermDebt', 'DebtLongtermAndShorttermCombinedAmount'],
   ltdCur: ['LongTermDebtCurrent', 'DebtCurrent', 'LongTermDebtAndCapitalLeaseObligationsCurrent'],
   stDebt: ['CommercialPaper', 'ShortTermBorrowings', 'OtherShortTermBorrowings'],
+  ar: ['AccountsReceivableNetCurrent', 'ReceivablesNetCurrent', 'AccountsNotesAndLoansReceivableNetCurrent'],
+  inv: ['InventoryNet', 'InventoryFinishedGoodsNetOfReserves'],
+  ap: ['AccountsPayableCurrent', 'AccountsPayableTradeCurrent', 'AccountsPayableAndAccruedLiabilitiesCurrent'],
+  re: ['RetainedEarningsAccumulatedDeficit'],
 };
 const DURATION = new Set(['revenue', 'cogs', 'opInc', 'da', 'interest', 'ni', 'capex', 'ocf']);
 const days = (a, b) => (new Date(b) - new Date(a)) / 864e5;
@@ -79,6 +83,7 @@ export function extractStatements(facts, years = 5) {
     ['Cash', ...col('cash')], ['Current Assets', ...col('ca')], ['Total Assets', ...ta], ['Current Liabilities', ...col('cl')],
     ['Total Liabilities', ...ends.map((_, i) => tl[i] ?? (ta[i] != null && eq[i] != null ? ta[i] - eq[i] : null))],
     ['Total Debt', ...debt], ['Equity', ...eq], ['CapEx', ...col('capex').map((v) => (v == null ? null : Math.abs(v)))], ['Operating Cash Flow', ...col('ocf')],
+    ['Accounts Receivable', ...col('ar')], ['Inventory', ...col('inv')], ['Accounts Payable', ...col('ap')], ['Retained Earnings', ...col('re')],
   ].map((r) => r.map((v) => (v == null ? '' : v)));
   return { years: ends.map(label), periodEnds: ends, rows };
 }

@@ -30,12 +30,17 @@ const ALIASES = {
   equity: ['equity', 'total equity', 'shareholders equity', "shareholders' equity", 'stockholders equity'],
   capex: ['capex', 'capital expenditure', 'capital expenditures'],
   ocf: ['operating cash flow', 'cash from operations', 'net cash from operating activities'],
+  receivables: ['accounts receivable', 'receivables', 'trade receivables', 'trade and other receivables', 'debtors'],
+  inventory: ['inventory', 'inventories', 'stock'],
+  payables: ['accounts payable', 'payables', 'trade payables', 'trade and other payables', 'creditors'],
+  retainedEarnings: ['retained earnings', 'accumulated deficit', 'retained earnings (accumulated deficit)'],
 };
 const LABELS = {
   revenue: 'Revenue', cogs: 'Cost of Goods Sold', grossProfit: 'Gross Profit', opex: 'Operating Expenses',
   ebitda: 'EBITDA', da: 'D&A', ebit: 'EBIT', interest: 'Interest Expense', netIncome: 'Net Income',
   cash: 'Cash', currentAssets: 'Current Assets', totalAssets: 'Total Assets', currentLiabilities: 'Current Liabilities',
   totalLiabilities: 'Total Liabilities', debt: 'Total Debt', equity: 'Equity', capex: 'CapEx', ocf: 'Operating Cash Flow',
+  receivables: 'Accounts Receivable', inventory: 'Inventory', payables: 'Accounts Payable', retainedEarnings: 'Retained Earnings',
 };
 const ALIAS_LIST = Object.entries(ALIASES)
   .flatMap(([key, arr]) => arr.map((a) => [a, key]))
@@ -240,7 +245,11 @@ Total Debt,3000000,2800000,2600000,2400000,2200000
 Total Liabilities,5400000,5400000,5500000,5600000,5800000
 Equity,4100000,4900000,5900000,7000000,8200000
 CapEx,450000,500000,600000,700000,800000
-Operating Cash Flow,1200000,1400000,1700000,2000000,2400000`;
+Operating Cash Flow,1200000,1400000,1700000,2000000,2400000
+Accounts Receivable,1100000,1200000,1350000,1500000,1700000
+Inventory,1000000,1100000,1150000,1200000,1250000
+Accounts Payable,900000,950000,1050000,1150000,1250000
+Retained Earnings,2600000,3400000,4400000,5500000,6700000`;
 
 const SAMPLE_COMPANY = 'Aurora Retail Co. (sample)';
 let uploadNote = '';
@@ -538,6 +547,11 @@ function defaults() {
     equity: op.equity, debt: op.debt, cash: op.cash, loanAmt: op.debt || Math.round(rev * 0.3),
     histLabel: ly ? `${String(ly).match(/(19|20)\d{2}/)?.[0] || ly}A` : 'Base',
     rf: marketRf()?.value ?? 4.2,
+    days: (() => {
+      const i = state.years.length - 1, g = (k) => (i >= 0 ? S(k)?.[i] ?? null : null), rev = g('revenue'), cogs = g('cogs') != null ? Math.abs(g('cogs')) : null;
+      const day = (a, b) => (a == null || !b ? null : Math.round((Math.abs(a) / b) * 365));
+      return { dso: day(g('receivables'), rev), dio: day(g('inventory'), cogs), dpo: day(g('payables'), cogs) };
+    })(),
     bench: chosenBenchmark(),
   };
 }
@@ -781,13 +795,9 @@ const MODELS = [
   },
   {
     id: 'ratios', name: 'Ratio Analysis', group: 'Performance',
-    desc: 'Profitability, liquidity, leverage, efficiency and return ratios calculated from your uploaded statements for every year.',
+    desc: 'More than 30 ratios across liquidity, profitability, leverage, efficiency, cash flow and growth, with DuPont, Altman Z″ and Piotroski F-score, ratings, industry comparison and commentary.',
     inputs: () => [],
-    run() {
-      if (!hasData()) return { html: '<div class="glass card empty"><h3>Upload statements to see ratios</h3><a class="btn" href="#upload">Upload data</a></div>' };
-      const all = ratios(), names = all[0].map((r) => r[0]);
-      return { html: `<div class="glass card">${table(['Ratio', ...state.years.map(esc)], names.map((n, i) => [n, ...all.map((y) => y[i][1])]))}</div>` };
-    },
+    run() { return ratioAnalysisView(); },
   },
   {
     id: 'forecast', name: '3-Statement Model', group: 'Performance',
@@ -861,7 +871,7 @@ const MODELS = [
   {
     id: 'workingcap', name: 'Working Capital', group: 'Performance',
     desc: 'Receivable, inventory and payable days, the cash conversion cycle, and how much cash better terms would release.',
-    inputs: (d) => [['rev', 'Annual revenue ($)', d.rev], ['cogs', 'Annual cost of goods sold ($)', Math.round(d.rev * (1 - d.gm / 100))], ['dso', 'Receivable days (DSO) now', 45], ['dio', 'Inventory days (DIO) now', 60], ['dpo', 'Payable days (DPO) now', 40],
+    inputs: (d) => [['rev', 'Annual revenue ($)', d.rev], ['cogs', 'Annual cost of goods sold ($)', Math.round(d.rev * (1 - d.gm / 100))], ['dso', 'Receivable days (DSO) now', d.days.dso ?? 45], ['dio', 'Inventory days (DIO) now', d.days.dio ?? 60], ['dpo', 'Payable days (DPO) now', d.days.dpo ?? 40],
       ['tdso', 'Target DSO', 38], ['tdio', 'Target DIO', 50], ['tdpo', 'Target DPO', 45]],
     run(v) {
       const calc = (dso, dio, dpo) => { const ar = (v.rev * dso) / 365, inv = (v.cogs * dio) / 365, ap = (v.cogs * dpo) / 365; return { ar, inv, ap, nwc: ar + inv - ap, ccc: dso + dio - dpo }; };
@@ -982,7 +992,8 @@ function renderModel() {
   const m = MODELS.find((x) => x.id === currentModel), d = defaults();
   const fields = m.inputs(d).map(([k, label, val, type]) =>
     `<div class="field"><label for="in-${k}">${label}</label><input id="in-${k}" data-k="${k}" ${type === 'text' ? 'type="text"' : 'type="number" step="any"'} value="${esc(val)}"></div>`).join('');
-  $('#modelArea').innerHTML = `<div class="model"><div class="glass inputs"><h3>Assumptions</h3>${fields || `<p class="small">${hasData() ? `Using data for <strong>${esc(state.company)}</strong>.` : ''}</p>`}${hasData() ? '' : '<p class="small muted">Tip: upload statements to pre-fill these inputs.</p>'}</div><div class="results" id="results"></div></div>`;
+  // Models without assumptions (e.g. Ratio Analysis) use the full width
+  $('#modelArea').innerHTML = `<div class="model${fields ? '' : ' solo'}"><div class="glass inputs"><h3>Assumptions</h3>${fields || `<p class="small">${hasData() ? `Using data for <strong>${esc(state.company)}</strong>.` : ''}</p>`}${hasData() ? '' : '<p class="small muted">Tip: upload statements to pre-fill these inputs.</p>'}</div><div class="results" id="results"></div></div>`;
   $$('#modelArea input').forEach((i) => i.addEventListener('input', runModel));
   runModel();
 }
@@ -1108,7 +1119,7 @@ const CATALOG = [
     outputs: ['Verdict: Feasible, Feasible with conditions or Not feasible', 'Cash flows, NPV, IRR, payback and break-even', 'Sensitivity to revenue and cost changes'],
     needs: 'Project assumptions only; no statements needed', best: 'Business cases for lenders, investors or the board.' },
   { id: 'ratios', group: 'Performance', file: 'ratio-analysis.xlsx',
-    outputs: ['Growth, margin, liquidity and leverage ratios', 'Return on assets and equity', 'Every year side by side'],
+    outputs: ['30+ ratios in 6 groups with strong / fair / weak ratings', 'DuPont ROE, Altman Z″ and Piotroski F-score', 'Industry comparison, trends, forecast years and commentary'],
     needs: 'Income statement and balance sheet (cash flow optional)', best: 'Credit reviews and benchmarking.' },
   { id: 'forecast', group: 'Performance', file: '3-statement-forecast.xlsx',
     outputs: ['Linked income statement, balance sheet and cash flow', 'Drivers from 3-year historical averages', 'Balance check, free cash flow, closing cash and debt'],
@@ -1311,7 +1322,7 @@ function sectorRows(p) {
   const n = 5, y1 = new Date().getFullYear() - 1, years = Array.from({ length: n }, (_, i) => y1 - n + 1 + i);
   const wob = (i, s) => 1 + 0.015 * Math.sin(i * 2.1 + s), r1k = (x) => Math.round(x / 1000) * 1000;
   const L = { Revenue: [], 'Cost of Goods Sold': [], 'Operating Expenses': [], 'Depreciation & Amortization': [], 'Interest Expense': [], 'Net Income': [], Cash: [], 'Current Assets': [], 'Total Assets': [],
-    'Current Liabilities': [], 'Total Debt': [], 'Total Liabilities': [], Equity: [], CapEx: [], 'Operating Cash Flow': [] };
+    'Current Liabilities': [], 'Total Debt': [], 'Total Liabilities': [], Equity: [], CapEx: [], 'Operating Cash Flow': [], 'Accounts Receivable': [], Inventory: [], 'Accounts Payable': [], 'Retained Earnings': [] };
   let prev = null;
   years.forEach((_, i) => {
     const rev = p.rev / Math.pow(1 + p.g, n - 1 - i) * wob(i, 0.4), cogs = rev * (1 - p.gm * wob(i, 1)), opex = rev * p.opex * wob(i, 2), da = rev * p.da;
@@ -1319,7 +1330,8 @@ function sectorRows(p) {
     const ca = ta * p.ca, cash = ca * 0.3, cl = rev * p.cl, equity = ta - cl - debt - ta * 0.04;
     const ocf = ni + da - (prev ? (rev - prev) * 0.06 : 0);
     const row = { Revenue: rev, 'Cost of Goods Sold': cogs, 'Operating Expenses': opex, 'Depreciation & Amortization': da, 'Interest Expense': int, 'Net Income': ni, Cash: cash, 'Current Assets': ca, 'Total Assets': ta,
-      'Current Liabilities': cl, 'Total Debt': debt, 'Total Liabilities': ta - equity, Equity: equity, CapEx: rev * p.capex, 'Operating Cash Flow': ocf };
+      'Current Liabilities': cl, 'Total Debt': debt, 'Total Liabilities': ta - equity, Equity: equity, CapEx: rev * p.capex, 'Operating Cash Flow': ocf,
+      'Accounts Receivable': ca * 0.35, Inventory: ca * 0.3, 'Accounts Payable': cl * 0.5, 'Retained Earnings': equity * 0.7 };
     Object.keys(L).forEach((k) => L[k].push(r1k(row[k])));
     prev = rev;
   });
@@ -1649,6 +1661,7 @@ function init() {
   renderThemeMenu();
   initIndicators();
   initChat();
+  initRatios();
   $('#themeBtn').addEventListener('click', (e) => {
     e.stopPropagation();
     const m = $('#themeMenu'); m.hidden = !m.hidden;

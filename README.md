@@ -21,7 +21,7 @@ The workbook is a formatted, formula-driven financial model:
 | Balance Sheet | Assets, liabilities and equity with a balance check |
 | Cash Flow | Operating, investing and financing cash flows and free cash flow |
 | DCF | Unlevered FCF from the statements, valuation bridge, implied multiples, EV and per-share sensitivities |
-| Ratios | Profitability, liquidity, leverage, returns and efficiency (actual and forecast) |
+| Ratios | 30+ ratios by category with industry column and formulas, DuPont, Altman Z″ and Piotroski F-score (actual and forecast) |
 | Model sheets | Scenarios, WACC, Comps, Monte Carlo, LBO, M&A, Loan, NPV / IRR, Break-even, Feasibility, Working Capital, Unit Economics, Runway (as chosen) |
 | Accuracy | Forecast-vs-actual backtest with accuracy by metric |
 | Formula Guide | Every key formula in plain English |
@@ -36,6 +36,7 @@ The **home page** has a search bar, model cards with spreadsheet previews and ex
 ## Features
 
 - **Models (18):** 3-Statement Model, DCF, Scenario Analysis, Comparables, WACC, Monte Carlo, LBO, M&A Accretion/Dilution, Loan Schedule, NPV / IRR, Break-even, Feasibility, Working Capital, Unit Economics & SaaS, Cash Runway, Ratio Analysis, Forecast Accuracy (backtest), Dashboard & Power BI.
+- **Ratio analysis toolkit:** 30+ ratios in 6 groups (liquidity, profitability, leverage, efficiency incl. DSO/DIO/DPO and cash conversion cycle, cash flow, growth) with strong/fair/weak ratings, trends, industry comparison, optional forecast years and formulas, DuPont ROE, Altman Z″-score, Piotroski F-score and written commentary. Uploads can include receivables, inventory, payables and retained earnings.
 - **Forecast accuracy:** every company gets a backtest: each recent year is forecast from the years before it and compared with the actual result (accuracy = 100% – average error; target 90%).
 - **Indicators tab:** live interest rates, yield curve and economic indicators with what each means for a model, plus indicative benchmarks for 26 industries and a company-vs-industry comparison.
 - **AI financial analyst:** a chat panel that answers using your company data, open model and market inputs.

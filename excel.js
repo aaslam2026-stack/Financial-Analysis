@@ -437,41 +437,100 @@ function sheetDCF(book, v) {
 
 function sheetRatios(book) {
   const K = book.core, { I, B, C, allCols, colLabel, H, IS, BS, CF } = K;
-  const { put, section, sh } = addSheet(book, 'Ratios', 'Ratio Analysis', sub('actual and forecast, calculated from the statements'));
-  section(5, 'Key ratios', allCols.length);
+  const { put, section, sh } = addSheet(book, 'Ratios', 'Ratio Analysis', sub('30+ ratios, DuPont, Altman Z″ and Piotroski F-score (actual and forecast)'));
+  const histKey = { ar: 'receivables', inv: 'inventory', ap: 'payables', re: 'retainedEarnings' };
+  const stmt = { rev: [IS, IS_, I.rev], cogs: [IS, IS_, I.cogs], gp: [IS, IS_, I.gp], ebitda: [IS, IS_, I.ebitda], ebit: [IS, IS_, I.ebit], da: [IS, IS_, I.da], int: [IS, IS_, I.int], ni: [IS, IS_, I.ni],
+    cash: [BS, BS_, B.cash], ca: [BS, BS_, B.tca], ta: [BS, BS_, B.ta], cl: [BS, BS_, B.cl], tl: [BS, BS_, B.tl], debt: [BS, BS_, B.debt], eq: [BS, BS_, B.eq], ocf: [CF, CF_, C.cfo] };
+  // Cell reference for an input in a given column (j = index into allCols); null when the figure isn't available
+  const refAt = (key, j) => {
+    if (j < 0) return null;
+    const c = allCols[j];
+    if (key === 'tax') return K.A('tax', 1);
+    if (key === 'capex') return CF.has(`${c}${C.capex}`) ? `(-${ref(CF_, c + C.capex)})` : null;
+    if (histKey[key]) { const h = book.hist?.[histKey[key]]; return h && j < H && S(histKey[key])[j] != null ? `Historicals!${c}${h.row}` : null; }
+    const [api, name, row] = stmt[key];
+    return api.has(`${c}${row}`) ? ref(name, c + row) : null;
+  };
+  const last = allCols.length, bmCol = colL(last + 2), howCol = colL(last + 3), bm = chosenBenchmark();
+  section(5, 'Key ratios', last + 3);
   put('A6', 'Ratio', null, 'headL');
   allCols.forEach((c, j) => put(`${c}6`, colLabel(j), null, j < H ? 'headA' : 'headF'));
-  const is = (c, k) => IS.has(`${c}${I[k]}`), bs = (c, k) => BS.has(`${c}${B[k]}`), cf = (c, k) => CF.has(`${c}${C[k]}`);
-  const RI = (c, k) => ref(IS_, c + I[k]), RB = (c, k) => ref(BS_, c + B[k]), RC = (c, k) => ref(CF_, c + C[k]);
-  const groups = [
-    ['Growth & profitability', [
-      ['Revenue growth', XF.pctS, (c) => is(c, 'growth') && `=${RI(c, 'growth')}`],
-      ['Gross margin', XF.pctS, (c) => is(c, 'gm') && `=${RI(c, 'gm')}`],
-      ['EBITDA margin', XF.pctS, (c) => is(c, 'em') && `=${RI(c, 'em')}`],
-      ['EBIT margin', XF.pctS, (c) => is(c, 'ebm') && `=${RI(c, 'ebm')}`],
-      ['Net margin', XF.pctS, (c) => is(c, 'nm') && `=${RI(c, 'nm')}`],
-      ['Free cash flow margin', XF.pctS, (c) => cf(c, 'fcfm') && `=${RC(c, 'fcfm')}`]]],
-    ['Liquidity & leverage', [
-      ['Current ratio', XF.mult, (c) => bs(c, 'tca') && bs(c, 'cl') && `=IFERROR(${RB(c, 'tca')}/${RB(c, 'cl')},"")`],
-      ['Debt / equity', XF.mult, (c) => bs(c, 'debt') && bs(c, 'eq') && `=IFERROR(${RB(c, 'debt')}/${RB(c, 'eq')},"")`],
-      ['Net debt / EBITDA', XF.mult, (c) => bs(c, 'debt') && bs(c, 'cash') && is(c, 'ebitda') && `=IFERROR((${RB(c, 'debt')}-${RB(c, 'cash')})/${RI(c, 'ebitda')},"")`],
-      ['Interest coverage (EBIT / interest)', XF.mult, (c) => is(c, 'ebit') && is(c, 'int') && `=IFERROR(${RI(c, 'ebit')}/${RI(c, 'int')},"")`]]],
-    ['Returns & efficiency', [
-      ['Return on assets', XF.pctS, (c) => is(c, 'ni') && bs(c, 'ta') && `=IFERROR(${RI(c, 'ni')}/${RB(c, 'ta')},"")`],
-      ['Return on equity', XF.pctS, (c) => is(c, 'ni') && bs(c, 'eq') && `=IFERROR(${RI(c, 'ni')}/${RB(c, 'eq')},"")`],
-      ['Asset turnover', XF.mult, (c) => is(c, 'rev') && bs(c, 'ta') && `=IFERROR(${RI(c, 'rev')}/${RB(c, 'ta')},"")`],
-      ['Cash conversion (CFO / net income)', XF.mult, (c) => cf(c, 'cfo') && is(c, 'ni') && `=IFERROR(${RC(c, 'cfo')}/${RI(c, 'ni')},"")`]]],
-  ];
+  put(`${bmCol}6`, 'Industry', null, 'head'); put(`${howCol}6`, 'How it’s calculated', null, 'headL');
   let r = 7;
-  groups.forEach(([g, defs]) => {
-    put(`A${r++}`, g, null, 'labelB');
-    defs.forEach(([label, z, f]) => {
-      put(`A${r}`, label, null, 'label');
-      allCols.forEach((c) => { const x = f(c); if (x) put(`${c}${r}`, x, z); });
+  RATIO_CATS.slice(1).forEach((cat) => {
+    put(`A${r++}`, cat, null, 'labelB');
+    RATIO_DEFS.filter((d) => d.cat === cat).forEach((d) => {
+      const z = d.fmt === 'pct' ? XF.pctS : d.fmt === 'x' ? XF.mult : d.fmt === 'days' ? '0 "days"' : XF.money;
+      put(`A${r}`, d.name, null, 'label');
+      allCols.forEach((c, j) => { const f = treeToExcel(d.f, (k, prior) => refAt(k, prior ? j - 1 : j)); if (f) put(`${c}${r}`, `=IFERROR(${f},"")`, z); });
+      if (bm && d.bench) put(`${bmCol}${r}`, bm[d.bench], z, 'input');
+      put(`${howCol}${r}`, d.how, null, 'how');
       r++;
     });
   });
-  sh.widths = { A: 40, ...Object.fromEntries(allCols.map((c) => [c, 12])) };
+  if (bm) put(`A${r++}`, `Industry column: ${bm.name} (indicative figures; confirm against the latest source).`, null, 'note');
+
+  // DuPont analysis
+  r++; section(r++, 'DuPont analysis of return on equity', last + 3);
+  const du = [['Net margin', ['/', 'ni', 'rev'], XF.pctS, 'Net income ÷ revenue'], ['× Asset turnover', ['/', 'rev', 'ta'], XF.mult, 'Revenue ÷ total assets'], ['× Equity multiplier', ['/', 'ta', 'eq'], XF.mult, 'Total assets ÷ equity']];
+  const r0 = r;
+  du.forEach(([label, t, z, how]) => {
+    put(`A${r}`, label, null, 'label');
+    allCols.forEach((c, j) => { const f = treeToExcel(t, (k, prior) => refAt(k, prior ? j - 1 : j)); if (f) put(`${c}${r}`, `=IFERROR(${f},"")`, z); });
+    put(`${howCol}${r}`, how, null, 'how'); r++;
+  });
+  put(`A${r}`, 'Return on equity (product of the three)', null, 'labelB');
+  allCols.forEach((c) => put(`${c}${r}`, `=IFERROR(${c}${r0}*${c}${r0 + 1}*${c}${r0 + 2},"")`, XF.pctS, 'total'));
+  put(`${howCol}${r}`, 'Net margin × asset turnover × equity multiplier', null, 'how'); r++;
+
+  // Altman Z''-score (actual years)
+  const actual = allCols.slice(0, H);
+  r++; section(r++, 'Altman Z″-score (private and non-manufacturing companies)', last + 3);
+  const zr = r, zParts = [['Working capital ÷ total assets', ['/', ['-', 'ca', 'cl'], 'ta'], 6.56], ['Retained earnings ÷ total assets', ['/', 're', 'ta'], 3.26], ['EBIT ÷ total assets', ['/', 'ebit', 'ta'], 6.72], ['Equity ÷ total liabilities', ['/', 'eq', 'tl'], 1.05]];
+  zParts.forEach(([label, t, w], k) => {
+    put(`A${r}`, `${label} (× ${w})`, null, 'label');
+    actual.forEach((c, j) => {
+      let f = treeToExcel(t, (key, prior) => refAt(key, prior ? j - 1 : j));
+      if (!f && k === 1) f = treeToExcel(['/', 'eq', 'ta'], (key) => refAt(key, j)); // equity stands in when retained earnings aren't reported
+      if (f) put(`${c}${r}`, `=IFERROR(${f},"")`, '0.000');
+    });
+    r++;
+  });
+  put(`A${r}`, 'Z″-score', null, 'labelB');
+  actual.forEach((c) => put(`${c}${r}`, `=IFERROR(6.56*${c}${zr}+3.26*${c}${zr + 1}+6.72*${c}${zr + 2}+1.05*${c}${zr + 3},"")`, XF.dec, 'output'));
+  put(`${howCol}${r}`, 'Above 2.6 safe · 1.1 to 2.6 grey zone · below 1.1 distress', null, 'how'); const zRow = r++;
+  put(`A${r}`, 'Zone', null, 'label');
+  actual.forEach((c) => put(`${c}${r}`, `=IF(${c}${zRow}="","",IF(${c}${zRow}>2.6,"Safe",IF(${c}${zRow}>=1.1,"Grey zone","Distress")))`, null));
+  r++;
+  if (!book.hist?.retainedEarnings) put(`A${r++}`, 'Retained earnings were not in the upload, so book equity is used in their place (a common approximation).', null, 'note');
+
+  // Piotroski F-score (actual years from the second one)
+  r++; section(r++, 'Piotroski F-score (1 = pass, 0 = fail)', last + 3);
+  const fr = r;
+  const tests = [
+    ['Positive return on assets', (g) => `IF(${g('ni')}/${g('ta')}>0,1,0)`, ['ni', 'ta']],
+    ['Positive operating cash flow', (g) => `IF(${g('ocf')}>0,1,0)`, ['ocf']],
+    ['Return on assets improved', (g, p) => `IF(${g('ni')}/${g('ta')}>${p('ni')}/${p('ta')},1,0)`, ['ni', 'ta'], true],
+    ['Cash flow exceeds net income', (g) => `IF(${g('ocf')}>${g('ni')},1,0)`, ['ocf', 'ni']],
+    ['Leverage (debt ÷ assets) fell', (g, p) => `IF(${g('debt')}/${g('ta')}<${p('debt')}/${p('ta')},1,0)`, ['debt', 'ta'], true],
+    ['Current ratio improved', (g, p) => `IF(${g('ca')}/${g('cl')}>${p('ca')}/${p('cl')},1,0)`, ['ca', 'cl'], true],
+    ['Gross margin improved', (g, p) => `IF(${g('gp')}/${g('rev')}>${p('gp')}/${p('rev')},1,0)`, ['gp', 'rev'], true],
+    ['Asset turnover improved', (g, p) => `IF(${g('rev')}/${g('ta')}>${p('rev')}/${p('ta')},1,0)`, ['rev', 'ta'], true],
+  ];
+  tests.forEach(([label, f, keys, needsPrior]) => {
+    put(`A${r}`, label, null, 'label');
+    actual.forEach((c, j) => {
+      if (j === 0) return;
+      const g = (k) => refAt(k, j), p = (k) => refAt(k, j - 1);
+      if (keys.every((k) => g(k) && (!needsPrior || p(k)))) put(`${c}${r}`, `=IFERROR(${f(g, p)},"")`, '0');
+    });
+    r++;
+  });
+  put(`A${r}`, 'F-score (tests passed)', null, 'labelB');
+  actual.forEach((c, j) => { if (j > 0) put(`${c}${r}`, `=SUM(${c}${fr}:${c}${r - 1})`, '0', 'output'); });
+  put(`${howCol}${r}`, `Out of ${tests.length} tests (share issuance isn’t in the statements). 7+ strong, 3 or less weak.`, null, 'how'); r++;
+
+  sh.widths = { A: 40, ...Object.fromEntries(allCols.map((c) => [c, 12])), [colL(last + 1)]: 2, [bmCol]: 12, [howCol]: 52 };
   sh.freeze = { x: 1, y: 6 };
 }
 
@@ -586,7 +645,7 @@ function sheetDashboard(dash, book) {
 /* ---------- Other model sheets ---------- */
 const XL_MODELS = {
   dcf: { sheet: 'DCF', desc: 'DCF valuation from the linked statements: FCF build, valuation bridge, implied multiples, two sensitivity tables', build: (book, v) => sheetDCF(book, v) },
-  ratios: { sheet: 'Ratios', desc: 'Growth, profitability, liquidity, leverage, returns and efficiency ratios (actual and forecast)', build: (book) => sheetRatios(book) },
+  ratios: { sheet: 'Ratios', desc: '30+ ratios by category with industry column, DuPont, Altman Z″ and Piotroski F-score (actual and forecast)', build: (book) => sheetRatios(book) },
   forecast: { sheet: 'Income Statement', desc: 'Linked 3-statement model (always included)', core: true, build() {} },
 
   wacc: { sheet: 'WACC', desc: 'Cost of capital: CAPM build-up, unlevered beta and a beta × market risk premium sensitivity', build(book, v) {
