@@ -117,3 +117,29 @@ function project3(dr, op, n) {
   }
   return Y;
 }
+
+// Forecast accuracy backtest: for each of the last (up to) three years, rebuild the drivers from the years
+// before it only, forecast that year with the same engine, and compare with what actually happened.
+// Accuracy = 100% – mean absolute percentage error.
+function backtest() {
+  const n = state.years.length;
+  if (!hasData() || n < 3 || !S('revenue')) return null;
+  const full = state, rows = [];
+  try {
+    for (let t = Math.max(2, n - 3); t < n; t++) {
+      state = { ...full, years: full.years.slice(0, t), items: Object.fromEntries(Object.entries(full.items).map(([k, a]) => [k, a.slice(0, t)])) };
+      const y = project3(deriveDrivers(), openingBS(), 1)[0];
+      const act = (k) => full.items[k]?.[t] ?? null;
+      [['Revenue', y.rev, act('revenue')], ['EBITDA', y.ebitda, act('ebitda')], ['Net income', y.ni, act('netIncome')]].forEach(([metric, forecast, actual]) => {
+        if (actual != null && actual !== 0) rows.push({ year: full.years[t], metric, forecast, actual, err: Math.abs(forecast - actual) / Math.abs(actual) });
+      });
+    }
+  } finally {
+    state = full;
+  }
+  if (!rows.length) return null;
+  const acc = (list) => Math.max(0, 1 - list.reduce((s, r) => s + r.err, 0) / list.length);
+  const byMetric = Object.fromEntries(['Revenue', 'EBITDA', 'Net income'].map((m) => [m, rows.some((r) => r.metric === m) ? acc(rows.filter((r) => r.metric === m)) : null]));
+  const vals = Object.values(byMetric).filter((v) => v != null);
+  return { rows, byMetric, overall: vals.reduce((a, b) => a + b, 0) / vals.length, tests: new Set(rows.map((r) => r.year)).size };
+}

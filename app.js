@@ -837,6 +837,135 @@ const MODELS = [
       };
     },
   },
+  {
+    id: 'scenario', name: 'Scenario Analysis', group: 'Valuation',
+    desc: 'Bull, base and bear cases for growth and margins, each valued with the DCF, plus a probability-weighted value.',
+    inputs: (d) => [['rev', 'Base revenue ($)', d.rev], ['g', 'Base revenue growth %', d.g], ['m', 'Base EBITDA margin %', d.m], ['bullG', 'Bull case: growth change (pts)', 3], ['bullM', 'Bull case: margin change (pts)', 2],
+      ['bearG', 'Bear case: growth change (pts)', -4], ['bearM', 'Bear case: margin change (pts)', -3], ['pBull', 'Bull probability %', 25], ['pBase', 'Base probability %', 50], ['pBear', 'Bear probability %', 25],
+      ['wacc', 'WACC %', 10], ['tg', 'Terminal growth %', 2.5], ['netDebt', 'Net debt ($)', d.netDebt], ['shares', 'Shares outstanding', 1_000_000]],
+    run(v, d) {
+      const base = { rev: v.rev, da: d.da, capex: d.capex, nwc: d.nwc, nwc0: d.nwc0, tax: d.tax, wacc: v.wacc, tg: v.tg, years: 5, netDebt: v.netDebt, shares: v.shares };
+      const sc = [['Bull', v.bullG, v.bullM, v.pBull], ['Base', 0, 0, v.pBase], ['Bear', v.bearG, v.bearM, v.pBear]].map(([name, dg, dm, p]) => ({ name, g: v.g + dg, m: v.m + dm, p: p / 100, r: dcfCore({ ...base, g: v.g + dg, m: v.m + dm }) }));
+      if (sc.some((s) => s.r.error)) return { html: '<div class="glass card">WACC must be higher than terminal growth.</div>' };
+      const totalP = sc.reduce((a, s) => a + s.p, 0), wEv = sc.reduce((a, s) => a + s.p * s.r.ev, 0) / (totalP || 1);
+      const last = (s, k) => s.r.rows.at(-1)[k];
+      return {
+        html: `<div class="kpis">${kpi('Probability-weighted EV', fmt(wEv), totalP.toFixed(2) === '1.00' ? 'probabilities sum to 100%' : `probabilities sum to ${pct(totalP, 0)} (rescaled)`, totalP.toFixed(2) === '1.00' ? 'up' : 'down')}${sc.map((s) => kpi(`${s.name} case EV`, fmt(s.r.ev), `${pctPts(s.g)} growth · ${pctPts(s.m)} margin`)).join('')}${kpi('Range (bear to bull)', fmt(sc[0].r.ev - sc[2].r.ev), `${pct((sc[0].r.ev - sc[2].r.ev) / sc[1].r.ev)} of base`)}</div>
+        <div class="glass card"><h3>Enterprise value by scenario</h3><div class="chart"><canvas id="mc1"></canvas></div></div>
+        <div class="glass card"><h3>Scenario comparison (final forecast year)</h3>${table(['Scenario', 'Probability', 'Growth', 'EBITDA margin', `Revenue ${fyLabel(5)}`, `EBITDA ${fyLabel(5)}`, `Free cash flow ${fyLabel(5)}`, 'Enterprise value', 'Equity value', 'Per share'],
+          sc.map((s) => [s.name, pct(s.p, 0), pctPts(s.g), pctPts(s.m), fmt(last(s, 'rev')), fmt(last(s, 'ebitda')), fmt(last(s, 'fcf')), fmt(s.r.ev), fmt(s.r.equity), fmt(s.r.perShare)]), (ri) => ri === 1)}</div>`,
+        charts: [['mc1', { type: 'bar', data: { labels: sc.map((s) => s.name), datasets: [{ label: 'Enterprise value', data: sc.map((s) => s.r.ev), backgroundColor: [COLORS.green, COLORS.blue, COLORS.red].map((c) => c + 'cc'), borderRadius: 6 }] }, options: { plugins: { legend: { display: false } }, scales: { y: moneyAxis } } }]],
+      };
+    },
+  },
+  {
+    id: 'workingcap', name: 'Working Capital', group: 'Performance',
+    desc: 'Receivable, inventory and payable days, the cash conversion cycle, and how much cash better terms would release.',
+    inputs: (d) => [['rev', 'Annual revenue ($)', d.rev], ['cogs', 'Annual cost of goods sold ($)', Math.round(d.rev * (1 - d.gm / 100))], ['dso', 'Receivable days (DSO) now', 45], ['dio', 'Inventory days (DIO) now', 60], ['dpo', 'Payable days (DPO) now', 40],
+      ['tdso', 'Target DSO', 38], ['tdio', 'Target DIO', 50], ['tdpo', 'Target DPO', 45]],
+    run(v) {
+      const calc = (dso, dio, dpo) => { const ar = (v.rev * dso) / 365, inv = (v.cogs * dio) / 365, ap = (v.cogs * dpo) / 365; return { ar, inv, ap, nwc: ar + inv - ap, ccc: dso + dio - dpo }; };
+      const now = calc(v.dso, v.dio, v.dpo), tgt = calc(v.tdso, v.tdio, v.tdpo), freed = now.nwc - tgt.nwc;
+      return {
+        html: `<div class="kpis">${kpi('Cash conversion cycle', `${now.ccc.toFixed(0)} days`, `target ${tgt.ccc.toFixed(0)} days`)}${kpi('Working capital tied up', fmt(now.nwc), `${pct(now.nwc / v.rev)} of revenue`)}${kpi('Cash released at target', fmt(freed), freed >= 0 ? 'one-off cash inflow' : 'extra cash needed', freed >= 0 ? 'up' : 'down')}${kpi('Value of 1 day of DSO', fmt(v.rev / 365))}${kpi('Value of 1 day of DIO / DPO', fmt(v.cogs / 365))}</div>
+        <div class="grid two">
+          <div class="glass card"><h3>Current vs target</h3>${table(['Item', 'Current', 'Target', 'Change'], [['Receivables (DSO)', fmt(now.ar), fmt(tgt.ar), fmt(tgt.ar - now.ar)], ['Inventory (DIO)', fmt(now.inv), fmt(tgt.inv), fmt(tgt.inv - now.inv)], ['Payables (DPO)', fmt(now.ap), fmt(tgt.ap), fmt(tgt.ap - now.ap)], ['<strong>Net working capital</strong>', fmt(now.nwc), fmt(tgt.nwc), fmt(tgt.nwc - now.nwc)], ['Cash conversion cycle (days)', now.ccc.toFixed(0), tgt.ccc.toFixed(0), (tgt.ccc - now.ccc).toFixed(0)]])}</div>
+          <div class="glass card"><h3>Cash conversion cycle (days)</h3><div class="chart"><canvas id="mc1"></canvas></div></div>
+        </div>`,
+        charts: [['mc1', { type: 'bar', data: { labels: ['DSO', 'DIO', 'DPO', 'Cycle'], datasets: [ds('Current', [v.dso, v.dio, -v.dpo, now.ccc], COLORS.blue), ds('Target', [v.tdso, v.tdio, -v.tdpo, tgt.ccc], COLORS.green)] } }]],
+      };
+    },
+  },
+  {
+    id: 'unitecon', name: 'Unit Economics & SaaS', group: 'Startups & growth',
+    desc: 'Customer lifetime value, acquisition cost and payback, plus a monthly MRR and ARR build with churn.',
+    inputs: () => [['cust', 'Customers today', 1000], ['arpu', 'Revenue per customer per month ($)', 100], ['gm', 'Gross margin %', 75], ['churn', 'Monthly churn %', 2], ['adds', 'New customers per month', 80],
+      ['addg', 'Growth in new customers per month %', 2], ['cac', 'Customer acquisition cost ($)', 900], ['fixed', 'Fixed costs per month ($)', 60000], ['months', 'Months to project', 24]],
+    run(v) {
+      const n = Math.min(60, Math.max(6, Math.round(v.months))), ch = v.churn / 100, gm = v.gm / 100;
+      const ltv = ch > 0 ? (v.arpu * gm) / ch : null, payback = (v.arpu * gm) > 0 ? v.cac / (v.arpu * gm) : null;
+      let c = v.cust, adds = v.adds;
+      const rows = [];
+      for (let t = 1; t <= n; t++) {
+        const lost = c * ch, end = c - lost + adds, mrr = end * v.arpu, gp = mrr * gm, profit = gp - v.fixed - adds * v.cac;
+        rows.push({ t, start: c, adds, lost, end, mrr, gp, profit });
+        c = end; adds *= 1 + v.addg / 100;
+      }
+      const be = rows.find((r) => r.profit >= 0);
+      return {
+        html: `<div class="kpis">${kpi('Lifetime value (LTV)', fmt(ltv), `${ch > 0 ? (1 / ch).toFixed(0) : '∞'}-month average life`)}${kpi('LTV / CAC', xf(ltv / v.cac), ltv / v.cac >= 3 ? 'Healthy (3x or more)' : 'Below the 3x rule of thumb', ltv / v.cac >= 3 ? 'up' : 'down')}${kpi('CAC payback', payback == null ? '—' : `${payback.toFixed(1)} months`, payback <= 12 ? 'Within 12 months' : 'Longer than 12 months', payback <= 12 ? 'up' : 'down')}${kpi(`MRR month ${n}`, fmt(rows.at(-1).mrr), `ARR ${fmt(rows.at(-1).mrr * 12)}`)}${kpi('Customers at end', Math.round(rows.at(-1).end).toLocaleString())}${kpi('Profit break-even', be ? `Month ${be.t}` : 'Not within period', '', be ? 'up' : 'down')}</div>
+        <div class="glass card"><h3>MRR and monthly profit</h3><div class="chart"><canvas id="mc1"></canvas></div></div>
+        <div class="glass card"><h3>Monthly build (every 3rd month)</h3>${tableT(rows.filter((r) => r.t % 3 === 0 || r.t === 1).map((r) => `M${r.t}`), [['Customers at start', rows.filter((r) => r.t % 3 === 0 || r.t === 1).map((r) => r.start), (x) => Math.round(x).toLocaleString()], ['New customers', rows.filter((r) => r.t % 3 === 0 || r.t === 1).map((r) => r.adds), (x) => Math.round(x).toLocaleString()], ['Churned customers', rows.filter((r) => r.t % 3 === 0 || r.t === 1).map((r) => r.lost), (x) => Math.round(x).toLocaleString()], ['MRR', rows.filter((r) => r.t % 3 === 0 || r.t === 1).map((r) => r.mrr), fmt, true], ['Gross profit', rows.filter((r) => r.t % 3 === 0 || r.t === 1).map((r) => r.gp)], ['Profit after CAC and fixed costs', rows.filter((r) => r.t % 3 === 0 || r.t === 1).map((r) => r.profit), fmt, true]])}</div>`,
+        charts: [['mc1', { data: { labels: rows.map((r) => `M${r.t}`), datasets: [ds('MRR', rows.map((r) => r.mrr), COLORS.blue, { type: 'bar' }), ds('Monthly profit', rows.map((r) => r.profit), COLORS.green, { type: 'line' })] }, options: { scales: { y: moneyAxis } } }]],
+      };
+    },
+  },
+  {
+    id: 'runway', name: 'Cash Runway', group: 'Startups & growth',
+    desc: 'Monthly burn, how many months the cash lasts, and the month cash flow turns positive, with optional new funding.',
+    inputs: (d) => [['cash', 'Cash today ($)', Math.round(d.cash || 500000)], ['rev', 'Monthly revenue ($)', Math.round((d.rev / 12) * 0.25)], ['revg', 'Monthly revenue growth %', 6], ['cost', 'Monthly costs ($)', Math.round((d.rev / 12) * 0.4)],
+      ['costg', 'Monthly cost growth %', 2], ['fund', 'New funding ($)', 0], ['fundM', 'Funding arrives in month', 6], ['months', 'Months to project', 36]],
+    run(v) {
+      const n = Math.min(60, Math.max(6, Math.round(v.months)));
+      let cash = v.cash, rev = v.rev, cost = v.cost;
+      const rows = [];
+      for (let t = 1; t <= n; t++) {
+        const fund = t === Math.round(v.fundM) ? v.fund : 0, net = rev - cost;
+        cash += net + fund;
+        rows.push({ t, rev, cost, net, fund, cash });
+        rev *= 1 + v.revg / 100; cost *= 1 + v.costg / 100;
+      }
+      const out = rows.find((r) => r.cash < 0), be = rows.find((r) => r.net >= 0), burn = -rows[0].net;
+      return {
+        html: `<div class="kpis">${kpi('Current monthly burn', fmt(Math.max(0, burn)), burn > 0 ? 'cash going out each month' : 'cash-flow positive', burn > 0 ? 'down' : 'up')}${kpi('Runway', out ? `${out.t - 1} months` : `${n}+ months`, out ? `cash runs out in month ${out.t}` : 'cash lasts the whole period', out ? 'down' : 'up')}${kpi('Cash-flow break-even', be ? `Month ${be.t}` : 'Not within period', '', be ? 'up' : 'down')}${kpi('Lowest cash balance', fmt(Math.min(...rows.map((r) => r.cash))))}${kpi(`Cash in month ${n}`, fmt(rows.at(-1).cash))}</div>
+        <div class="glass card"><h3>Cash balance</h3><div class="chart"><canvas id="mc1"></canvas></div></div>
+        <div class="glass card"><h3>Monthly cash flow (every 3rd month)</h3>${tableT(rows.filter((r) => r.t % 3 === 0 || r.t === 1).map((r) => `M${r.t}`), [['Revenue', rows.filter((r) => r.t % 3 === 0 || r.t === 1).map((r) => r.rev)], ['Costs', rows.filter((r) => r.t % 3 === 0 || r.t === 1).map((r) => r.cost)], ['Net cash flow', rows.filter((r) => r.t % 3 === 0 || r.t === 1).map((r) => r.net), fmt, true], ['Funding', rows.filter((r) => r.t % 3 === 0 || r.t === 1).map((r) => r.fund)], ['Closing cash', rows.filter((r) => r.t % 3 === 0 || r.t === 1).map((r) => r.cash), fmt, true]])}</div>`,
+        charts: [['mc1', { data: { labels: rows.map((r) => `M${r.t}`), datasets: [ds('Closing cash', rows.map((r) => r.cash), COLORS.blue, { type: 'line' }), ds('Net cash flow', rows.map((r) => r.net), COLORS.orange, { type: 'bar' })] }, options: { scales: { y: moneyAxis } } }]],
+      };
+    },
+  },
+  {
+    id: 'mna', name: 'M&A Accretion / Dilution', group: 'Deals & financing',
+    desc: 'Whether buying a company raises or lowers the buyer’s earnings per share, with financing mix, synergies and a sensitivity grid.',
+    inputs: (d) => [['ani', 'Buyer net income ($)', Math.round(d.ni)], ['ash', 'Buyer shares outstanding', 1_000_000], ['apx', 'Buyer share price ($)', +(d.ni * 18 / 1e6).toFixed(2)], ['tni', 'Target net income ($)', Math.round(d.ni * 0.3)],
+      ['price', 'Purchase price for target equity ($)', Math.round(d.ni * 0.3 * 15)], ['stock', 'Paid in new shares %', 50], ['debt', 'Paid with new debt %', 30], ['rate', 'Interest rate on new debt %', 7],
+      ['cashY', 'Interest earned on cash used %', 4], ['syn', 'Pre-tax synergies per year ($)', Math.round(d.ni * 0.05)], ['tax', 'Tax rate %', d.tax], ['fees', 'Transaction fees ($)', Math.round(d.ni * 0.3 * 15 * 0.02)]],
+    run(v) {
+      const calc = (stockPct, syn) => {
+        const t = v.tax / 100, stockAmt = v.price * stockPct / 100, debtAmt = v.price * v.debt / 100, cashAmt = Math.max(0, v.price - stockAmt - debtAmt) + v.fees;
+        const newShares = stockAmt / v.apx, ni = v.ani + v.tni + syn * (1 - t) - debtAmt * (v.rate / 100) * (1 - t) - cashAmt * (v.cashY / 100) * (1 - t);
+        const eps0 = v.ani / v.ash, eps1 = ni / (v.ash + newShares);
+        return { eps0, eps1, acc: eps1 / eps0 - 1, ni, newShares, stockAmt, debtAmt, cashAmt };
+      };
+      const r = calc(v.stock, v.syn);
+      // Synergies needed for zero accretion: solve the linear equation in synergies
+      const sens = (s) => calc(v.stock, s).acc, beSyn = v.syn - sens(v.syn) * ((v.syn + 1) - v.syn) / (sens(v.syn + 1) - sens(v.syn));
+      const stocks = [0, 25, 50, 75, 100], syns = [0, 0.5, 1, 1.5, 2].map((k) => v.syn * k);
+      return {
+        html: `<div class="kpis">${kpi('Accretion / (dilution)', pct(r.acc), r.acc >= 0 ? 'Accretive to EPS' : 'Dilutive to EPS', r.acc >= 0 ? 'up' : 'down')}${kpi('Pro forma EPS', fmt(r.eps1), `standalone ${fmt(r.eps0)}`)}${kpi('New shares issued', Math.round(r.newShares).toLocaleString())}${kpi('Synergies to break even', fmt(Math.max(0, beSyn)), 'pre-tax, per year')}${kpi('Price paid / target earnings', xf(v.price / v.tni), `buyer P/E ${xf(v.apx / (v.ani / v.ash))}`)}</div>
+        <div class="grid two">
+          <div class="glass card"><h3>Sources of funding</h3>${table(['Source', 'Amount'], [['New shares', fmt(r.stockAmt)], ['New debt', fmt(r.debtAmt)], ['Cash (incl. fees)', fmt(r.cashAmt)], ['<strong>Total</strong>', fmt(r.stockAmt + r.debtAmt + r.cashAmt)]])}</div>
+          <div class="glass card"><h3>Pro forma earnings</h3>${table(['Item', 'Amount'], [['Buyer net income', fmt(v.ani)], ['Target net income', fmt(v.tni)], ['After-tax synergies', fmt(v.syn * (1 - v.tax / 100))], ['After-tax interest on new debt', fmt(-r.debtAmt * (v.rate / 100) * (1 - v.tax / 100))], ['Lost after-tax interest on cash', fmt(-r.cashAmt * (v.cashY / 100) * (1 - v.tax / 100))], ['<strong>Pro forma net income</strong>', fmt(r.ni)]])}</div>
+        </div>
+        <div class="glass card"><h3>EPS accretion: % paid in shares ↓ × synergies →</h3>${table(['Shares \\ Synergies', ...syns.map((s) => fmt(s))], stocks.map((st) => [`${st}%`, ...syns.map((s) => pct(calc(st, s).acc))]))}</div>`,
+      };
+    },
+  },
+  {
+    id: 'accuracy', name: 'Forecast Accuracy', group: 'Performance',
+    desc: 'Tests the forecasting method on your own history: each recent year is forecast from earlier years only, then compared with what actually happened.',
+    inputs: () => [],
+    run() {
+      const bt = backtest();
+      if (!bt) return { html: '<div class="glass card empty"><h3>At least 3 years of statements are needed for a backtest</h3><a class="btn" href="#upload">Upload data</a></div>' };
+      const grade = (a) => (a >= 0.95 ? 'Excellent' : a >= 0.9 ? 'Strong' : a >= 0.8 ? 'Fair' : 'Weak');
+      return {
+        html: `<div class="kpis">${kpi('Overall forecast accuracy', pct(bt.overall), `${grade(bt.overall)} · target 90%`, bt.overall >= 0.9 ? 'up' : 'down')}${Object.entries(bt.byMetric).filter(([, a]) => a != null).map(([m, a]) => kpi(`${m} accuracy`, pct(a), grade(a), a >= 0.9 ? 'up' : 'down')).join('')}${kpi('Years tested', bt.tests, 'one-year-ahead forecasts')}</div>
+        <div class="glass card"><h3>Forecast vs actual</h3>${table(['Year', 'Metric', 'Forecast', 'Actual', 'Error', 'Accuracy'], bt.rows.map((r) => [esc(r.year), r.metric, fmt(r.forecast), fmt(r.actual), pct(r.err), pct(Math.max(0, 1 - r.err))]))}</div>
+        <div class="glass card"><h3>How to read this</h3><ul class="tips"><li>Each test uses only the years before it to set growth, margins, tax and other drivers, exactly as the live forecast does.</li><li>Accuracy = 100% minus the average percentage error. Above 90% means the method tracks this company well.</li><li>Past accuracy doesn’t guarantee future accuracy: use Scenario Analysis and the sensitivity tables to plan for a range of outcomes.</li></ul></div>`,
+      };
+    },
+  },
 ];
 
 let currentModel = 'dcf';
@@ -984,6 +1113,24 @@ const CATALOG = [
   { id: 'forecast', group: 'Performance', file: '3-statement-forecast.xlsx',
     outputs: ['Linked income statement, balance sheet and cash flow', 'Drivers from 3-year historical averages', 'Balance check, free cash flow, closing cash and debt'],
     needs: 'Income statement and balance sheet (cash flow optional)', best: 'Budgets, business plans and lender models.' },
+  { id: 'scenario', group: 'Valuation', file: 'scenario-analysis.xlsx',
+    outputs: ['Bull, base and bear enterprise values', 'Probability-weighted value and range', 'Final-year revenue, EBITDA and cash flow by case'],
+    needs: 'Income statement and balance sheet', best: 'Board and investor discussions about risk and upside.' },
+  { id: 'workingcap', group: 'Performance', file: 'working-capital.xlsx',
+    outputs: ['DSO, DIO, DPO and cash conversion cycle', 'Working capital tied up and cash released', 'Current vs target comparison'],
+    needs: 'Revenue and cost of goods sold, plus your payment terms', best: 'Freeing up cash and negotiating terms.' },
+  { id: 'unitecon', group: 'Startups & growth', file: 'unit-economics.xlsx',
+    outputs: ['LTV, CAC, LTV/CAC and payback', 'Monthly MRR, ARR and customer build', 'Profit break-even month'],
+    needs: 'Customers, pricing, churn and acquisition cost', best: 'SaaS, subscription and e-commerce businesses.' },
+  { id: 'runway', group: 'Startups & growth', file: 'cash-runway.xlsx',
+    outputs: ['Monthly burn and runway in months', 'Cash-flow break-even month', 'Monthly cash balance with funding'],
+    needs: 'Cash today, monthly revenue and costs', best: 'Startups planning fundraising.' },
+  { id: 'mna', group: 'Deals & financing', file: 'ma-accretion-dilution.xlsx',
+    outputs: ['EPS accretion or dilution', 'Synergies needed to break even', 'Sensitivity by share mix and synergies'],
+    needs: 'Buyer and target earnings, price and financing mix', best: 'Acquisition screening and board approvals.' },
+  { id: 'accuracy', group: 'Performance', file: 'forecast-accuracy.xlsx',
+    outputs: ['Backtest accuracy for revenue, EBITDA and net income', 'Forecast vs actual by year', 'Grade against a 90% target'],
+    needs: 'At least 3 years of statements', best: 'Showing clients how reliable the forecast is.' },
   { id: 'dashboard', group: 'Reporting', file: 'powerbi-dataset.xlsx', href: '#dashboard', cta: 'Open dashboard',
     title: 'Dashboard & Power BI Export', desc: 'An interactive, Power BI-style view of your statements, with a one-click dataset for Power BI Desktop.',
     outputs: ['KPI cards, trends, margins and a profit bridge', 'Year and metric filters, plus a full financial matrix', 'Power BI dataset: FactFinancials and Ratios tables'],
@@ -992,8 +1139,9 @@ const CATALOG = [
 const CATEGORIES = ['All models', ...new Set(CATALOG.map((c) => c.group))];
 const KEYWORDS = { dcf: 'discounted cash flow intrinsic valuation', lbo: 'leveraged buyout private equity pe sponsor', forecast: '3 statement three statement income statement balance sheet cash flow budget projection',
   npv: 'irr net present value capital budgeting payback', wacc: 'discount rate cost of capital capm beta', comps: 'comparable companies trading multiples peers', montecarlo: 'simulation risk scenario probability',
-  breakeven: 'break even cvp pricing units', loan: 'debt amortization mortgage repayment', feasibility: 'project business case appraisal', ratios: 'ratio analysis credit liquidity leverage', dashboard: 'power bi kpi report charts' };
-const BAND = { Valuation: '#3b5b8a', 'Deals & financing': '#2f5d50', 'Projects & investments': '#6b2e3e', Performance: '#36707c', Reporting: '#4a4f6a' };
+  breakeven: 'break even cvp pricing units', loan: 'debt amortization mortgage repayment', feasibility: 'project business case appraisal', ratios: 'ratio analysis credit liquidity leverage', dashboard: 'power bi kpi report charts', scenario: 'scenario bull bear base case probability what if', workingcap: 'working capital dso dio dpo cash conversion receivables inventory payables',
+  unitecon: 'saas unit economics ltv cac churn mrr arr subscription', runway: 'cash runway burn startup funding', mna: 'm&a merger acquisition accretion dilution eps synergies', accuracy: 'accuracy backtest reliability error 90%' };
+const BAND = { Valuation: '#3b5b8a', 'Deals & financing': '#2f5d50', 'Projects & investments': '#6b2e3e', Performance: '#36707c', 'Startups & growth': '#7a5a1f', Reporting: '#4a4f6a' };
 let currentCat = 'All models', examples = null, thumbs = null, query = '', stageFilter = null, showAll = false;
 
 function sampleState() {
@@ -1254,10 +1402,10 @@ const ICONS = {
   handshake: '<svg viewBox="0 0 100 100" fill="none" stroke="currentColor" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"><path d="M8 40l16-10 18 6 12-8 12 4 26 8"/><path d="M8 40l14 22 14 12c4 4 10 4 14 0l22-20"/><path d="M42 36l-10 12c-2 4 4 8 8 4l10-8 16 14"/><path d="M92 40L78 62"/></svg>',
 };
 const STAGES = [
-  { title: 'Startup', sub: 'New ventures and projects', text: 'Check an idea pays off before you commit money.', ids: ['breakeven', 'npv', 'feasibility', 'loan'], icon: 'seed' },
-  { title: 'Growing company', sub: 'Scaling revenue and planning cash', text: 'Forecast the statements and see what the business is worth.', ids: ['forecast', 'dcf', 'ratios', 'dashboard'], icon: 'sprout' },
+  { title: 'Startup', sub: 'New ventures and projects', text: 'Check an idea pays off before you commit money.', ids: ['runway', 'unitecon', 'breakeven', 'npv', 'feasibility'], icon: 'seed' },
+  { title: 'Growing company', sub: 'Scaling revenue and planning cash', text: 'Forecast the statements and see what the business is worth.', ids: ['forecast', 'dcf', 'scenario', 'workingcap', 'accuracy', 'dashboard'], icon: 'sprout' },
   { title: 'Established company', sub: 'Valuing a mature business', text: 'Cross-check value with cash flows, peers and risk.', ids: ['dcf', 'comps', 'wacc', 'montecarlo'], icon: 'building' },
-  { title: 'Deals & financing', sub: 'Buyouts, loans and refinancing', text: 'Test returns, debt capacity and repayment.', ids: ['lbo', 'loan', 'wacc', 'comps'], icon: 'handshake' },
+  { title: 'Deals & financing', sub: 'Buyouts, loans and refinancing', text: 'Test returns, debt capacity and repayment.', ids: ['lbo', 'mna', 'loan', 'wacc', 'comps'], icon: 'handshake' },
 ];
 function renderStages() {
   $('#stages').innerHTML = STAGES.map((s, i) => `<button class="stage" type="button" data-stage="${i}">
@@ -1314,7 +1462,7 @@ function renderWorkspace(id) {
 }
 
 /* ---------- Excel model builder page ---------- */
-const BUILD_IDS = ['dcf', 'comps', 'wacc', 'montecarlo', 'lbo', 'loan', 'npv', 'breakeven', 'feasibility'];
+const BUILD_IDS = ['dcf', 'scenario', 'comps', 'wacc', 'montecarlo', 'lbo', 'mna', 'loan', 'npv', 'breakeven', 'feasibility', 'workingcap', 'unitecon', 'runway', 'accuracy'];
 let buildSel = new Set(BUILD_IDS);
 
 function renderBuild() {

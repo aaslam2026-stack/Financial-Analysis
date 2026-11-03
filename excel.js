@@ -50,6 +50,7 @@ const flat = (args) => args.flat(Infinity);
 const nums = (args) => flat(args).filter((x) => typeof x === 'number');
 const XL_FN = {
   SUM: (a) => nums(a).reduce((s, x) => s + x, 0),
+  COUNT: (a) => nums(a).length,
   MIN: (a) => (nums(a).length ? Math.min(...nums(a)) : 0),
   MAX: (a) => (nums(a).length ? Math.max(...nums(a)) : 0),
   AVERAGE: (a) => { const n = nums(a); return n.length ? n.reduce((s, x) => s + x, 0) / n.length : NaN; },
@@ -160,7 +161,7 @@ function addSheet(book, name, title, subtitle, tab = '0B2545') {
       return abs(`B${row}`);
     },
     // Output row: bold label in A, formula in B. Returns the absolute ref (sheet-qualified).
-    output: (row, text, f, z, s = 'output') => { put(`A${row}`, text, null, s === 'output' ? 'labelB' : 'label'); put(`B${row}`, f, z, s); return ref(name, abs(`B${row}`)); },
+    output: (row, text, f, z, s = 'output', how) => { put(`A${row}`, text, null, s === 'output' ? 'labelB' : 'label'); put(`B${row}`, f, z, s); if (how) put(`C${row}`, how, null, 'how'); return ref(name, abs(`B${row}`)); },
   };
   if (title) {
     put('A1', title, null, 'title');
@@ -199,6 +200,19 @@ function linkOr(book, key, val) {
 }
 
 /* ---------- Core: Assumptions + linked Income Statement, Balance Sheet, Cash Flow ---------- */
+// Plain-English formula for each forecast line, shown beside the numbers so clients can follow the maths
+const HOW = Object.fromEntries(Object.entries({
+  'Income Statement': { rev: 'Prior-year revenue × (1 + revenue growth)', growth: 'Revenue ÷ prior-year revenue – 1', cogs: 'Revenue × (1 – gross margin)', gp: 'Revenue – cost of goods sold', gm: 'Gross profit ÷ revenue',
+    opex: 'Revenue × operating expenses %', ebitda: 'Gross profit – operating expenses', em: 'EBITDA ÷ revenue', da: 'Revenue × D&A %', ebit: 'EBITDA – depreciation & amortization', ebm: 'EBIT ÷ revenue',
+    int: 'Opening debt (prior-year balance sheet) × interest rate', pbt: 'EBIT – interest expense', tax: 'Profit before tax × tax rate (zero when there is a loss)', etr: 'Income tax ÷ profit before tax', ni: 'Profit before tax – income tax', nm: 'Net income ÷ revenue' },
+  'Balance Sheet': { cash: 'Closing cash from the cash flow statement', noncash: 'Revenue × non-cash current assets %', tca: 'Cash + non-cash current assets', ppe: 'Prior year + capital expenditure – D&A', ta: 'Current assets + non-current assets',
+    cl: 'Revenue × current liabilities %', debt: 'Prior-year debt – debt repaid this year', other: 'Held at the last actual level', tl: 'Current liabilities + debt + other liabilities', eq: 'Prior-year equity + net income – dividends',
+    tle: 'Total liabilities + equity', check: 'Total assets – (liabilities + equity); must be zero' },
+  'Cash Flow': { ni: 'From the income statement', da: 'Non-cash expense added back', dnca: 'Prior-year – this-year non-cash current assets', dcl: 'This-year – prior-year current liabilities', cfo: 'Net income + D&A + working-capital changes',
+    capex: 'Revenue × CapEx % (cash paid out)', cfi: 'Capital expenditure', repay: 'Lower of opening debt and the planned repayment', div: 'Net income × dividend payout %', cff: 'Debt repayment + dividends',
+    net: 'Operating + investing + financing cash flows', open: 'Prior-year closing cash', close: 'Opening cash + net change in cash', fcf: 'Cash from operations – capital expenditure', fcfm: 'Free cash flow ÷ revenue' },
+}).flatMap(([sheet, m]) => Object.entries(m).map(([k, v]) => [`${k}@${sheet}`, v])));
+
 function buildCore(book, dr, n) {
   const withData = hasData(), H = withData ? state.years.length : 1, last = H - 1, op = openingBS();
   const aCol = (i) => colL(1 + i), fCol = (t) => colL(H + t), lastA = aCol(last), allCols = Array.from({ length: H + n }, (_, j) => colL(1 + j));
@@ -261,8 +275,12 @@ function buildCore(book, dr, n) {
     api.sh.widths = { A: 42, ...Object.fromEntries(allCols.map((c) => [c, 13])) };
     api.sh.freeze = { x: 1, y: 5 };
   };
+  const howCol = colL(H + n + 2); // one narrow spacer column after the last forecast year
   const write = (api, lines, R) => {
     head(api);
+    api.put(`${howCol}5`, 'How the forecast is calculated', null, 'headL');
+    api.sh.widths[howCol] = 58;
+    api.sh.widths[colL(H + n + 1)] = 2;
     lines.forEach((L) => {
       const row = R[L.k];
       api.put(`A${row}`, L.label, null, L.bold ? 'labelB' : L.pct ? 'labelP' : 'label');
@@ -276,6 +294,7 @@ function buildCore(book, dr, n) {
         const c = fCol(t), p = t === 1 ? lastA : fCol(t - 1);
         api.put(`${c}${row}`, L.f(t, c, p), L.z || XF.money, L.bold ? 'total' : L.pct ? 'pctRow' : undefined);
       }
+      if (HOW[L.k + '@' + api.sh.name]) api.put(`${howCol}${row}`, HOW[L.k + '@' + api.sh.name], null, 'how');
     });
   };
   const IS = book_.IS, BS = book_.BS, CF = book_.CF;
@@ -347,6 +366,8 @@ function buildCore(book, dr, n) {
 }
 
 /* ---------- Statement-driven sheets ---------- */
+const DCF_HOW = { rev: 'From the income statement forecast', ebitda: 'From the income statement', ebit: 'EBITDA – D&A', tax: 'EBIT × tax rate', nopat: 'EBIT – taxes on EBIT', capex: 'From the cash flow statement',
+  dnwc: 'Change in (non-cash current assets – current liabilities)', fcf: 'NOPAT + D&A – CapEx – increase in working capital', df: '1 ÷ (1 + WACC) ^ year', pv: 'Free cash flow × discount factor' };
 function sheetDCF(book, v) {
   const K = book.core, { n, fCol, lastA, I, B, C } = K;
   const { put, section, header, assume, output, sh } = addSheet(book, 'DCF', 'DCF Valuation', sub('unlevered free cash flow from the linked statements'));
@@ -377,17 +398,18 @@ function sheetDCF(book, v) {
     put(`${c}${R.dnwc}`, `=(${ref(BS_, s + B.noncash)}-${ref(BS_, s + B.cl)})-(${ref(BS_, sp + B.noncash)}-${ref(BS_, sp + B.cl)})`, XF.money);
     put(`${c}${R.fcf}`, `=${c}${R.nopat}+${c}${R.add}-${c}${R.capex}-${c}${R.dnwc}`, XF.money, 'total');
     put(`${c}${R.df}`, `=1/(1+${W})^${t}`, XF.df);
+    if (t === n) Object.entries(DCF_HOW).forEach(([k, txt]) => put(`${colL(n + 1)}${R[k]}`, txt, null, 'how'));
     put(`${c}${R.pv}`, `=${c}${R.fcf}*${c}${R.df}`, XF.money, 'total');
   }
   r++; section(r++, 'Valuation', Math.max(n, 5));
   const V = {};
-  const sumRow = r; V.sum = output(r++, 'Sum of PV of free cash flows', `=SUM(B${R.pv}:${last}${R.pv})`, XF.money, 'calc');
-  const tvRow = r; V.tv = output(r++, 'Terminal value (Gordon growth, undiscounted)', `=${last}${R.fcf}*(1+${TG})/(${W}-${TG})`, XF.money, 'calc');
-  const pvtvRow = r; V.pvtv = output(r++, 'PV of terminal value', `=B${tvRow}*${last}${R.df}`, XF.money, 'calc');
-  const evRow = r; V.ev = output(r++, 'Enterprise value', `=B${sumRow}+B${pvtvRow}`, XF.money);
+  const sumRow = r; V.sum = output(r++, 'Sum of PV of free cash flows', `=SUM(B${R.pv}:${last}${R.pv})`, XF.money, 'calc', 'Add up the present value of each forecast year');
+  const tvRow = r; V.tv = output(r++, 'Terminal value (Gordon growth, undiscounted)', `=${last}${R.fcf}*(1+${TG})/(${W}-${TG})`, XF.money, 'calc', 'Final-year FCF × (1 + terminal growth) ÷ (WACC – terminal growth)');
+  const pvtvRow = r; V.pvtv = output(r++, 'PV of terminal value', `=B${tvRow}*${last}${R.df}`, XF.money, 'calc', 'Terminal value × final-year discount factor');
+  const evRow = r; V.ev = output(r++, 'Enterprise value', `=B${sumRow}+B${pvtvRow}`, XF.money, 'output', 'PV of forecast cash flows + PV of terminal value');
   const ndRow = r; output(r++, 'Less: net debt', `=${ND}`, XF.money, 'calc');
-  const eqRow = r; V.eq = output(r++, 'Equity value', `=B${evRow}-B${ndRow}`, XF.money);
-  const psRow = r; V.ps = output(r++, 'Value per share', `=B${eqRow}/${SH}`, XF.money2);
+  const eqRow = r; V.eq = output(r++, 'Equity value', `=B${evRow}-B${ndRow}`, XF.money, 'output', 'Enterprise value – net debt');
+  const psRow = r; V.ps = output(r++, 'Value per share', `=B${eqRow}/${SH}`, XF.money2, 'output', 'Equity value ÷ shares outstanding');
   V.up = output(r++, 'Upside / (downside) vs current price', `=IF(${PR}>0,B${psRow}/${PR}-1,"n/a")`, XF.pctS, 'calc');
   output(r++, 'Terminal value as % of EV', `=B${pvtvRow}/B${evRow}`, XF.pct, 'calc');
   output(r++, 'Implied EV / EBITDA (last actual year)', `=IFERROR(B${evRow}/${ref(IS_, lastA + I.ebitda)},"n/a")`, XF.mult, 'calc');
@@ -409,7 +431,7 @@ function sheetDCF(book, v) {
   };
   grid('Sensitivity: enterprise value', false);
   grid('Sensitivity: value per share', true);
-  sh.widths = { A: 46, ...Object.fromEntries(Array.from({ length: Math.max(n, 5) }, (_, i) => [colL(i + 1), 14])) };
+  sh.widths = { A: 46, ...Object.fromEntries(Array.from({ length: Math.max(n, 5) }, (_, i) => [colL(i + 1), 14])), [colL(n + 1)]: 50 };
   book.out.dcf = V;
 }
 
@@ -510,11 +532,40 @@ function sheetDashboard(dash, book) {
   if (O.feas) vals.push(['Feasibility NPV', O.feas.npv, XF.money], ['Feasibility IRR', O.feas.irr, XF.pct]);
   if (O.be) vals.push(['Break-even units', O.be.units, XF.num]);
   if (O.loan) vals.push(['Loan payment per period', O.loan.pmt, XF.money2]);
+  if (O.scenario) vals.push(['Scenario probability-weighted EV', O.scenario.wev, XF.money]);
   let vr = tRow + lines.length + 3;
   if (vals.length) {
     put(`B${vr}`, 'Valuation & returns summary', null, 'section');
     sh.sections.push([vr, 6]); vr++;
     vals.forEach(([label, rf, z]) => { put(`B${vr}`, label, null, 'label'); sh.merges.push(`B${vr}:E${vr}`); put(`F${vr}`, `=${rf}`, z, 'output'); vr++; });
+  }
+
+  // Model health: accuracy, balance check and the market inputs used
+  vr += 1;
+  put(`B${vr}`, 'Model health & inputs', null, 'section'); sh.sections.push([vr, 6]); vr++;
+  const chk = `${ref(BS_, `${K.fCol(1)}${B.check}`)}:${ref(BS_, `${K.fCol(n)}${B.check}`).split('!')[1]}`;
+  const health = [['Balance sheet balances in every forecast year', `=IF(AND(MAX(${chk})<1,MIN(${chk})>-1),"Yes","Check")`, null]];
+  if (O.accuracy) health.push(['Forecast accuracy (backtest on your history)', `=${O.accuracy.overall}`, XF.pct]);
+  const rf = marketRf();
+  health.push(['Risk-free rate source', rf ? `${rf.value.toFixed(2)}% · ${rf.source} (${rf.date})` : '4.20% default (set a live rate on the Indicators tab)', null]);
+  const bm = chosenBenchmark();
+  if (bm) health.push(['Industry benchmark', `${bm.name} (indicative)`, null]);
+  health.forEach(([label, f, z]) => { put(`B${vr}`, label, null, 'label'); sh.merges.push(`B${vr}:E${vr}`); put(`F${vr}`, f, z, typeof f === 'string' && f[0] === '=' ? 'output' : 'label'); vr++; });
+
+  // Company vs industry benchmark (latest actual year)
+  if (bm && hasData()) {
+    vr += 1;
+    put(`B${vr}`, `Company vs industry: ${bm.name}`, null, 'section'); sh.sections.push([vr, 6]); vr++;
+    ['Metric', '', '', 'Company', 'Industry', 'Difference'].forEach((h, j) => { if (h || j === 0) put(`${colL(1 + j)}${vr}`, h, null, j === 0 ? 'headL' : 'head'); });
+    sh.merges.push(`B${vr}:D${vr}`); vr++;
+    const la = lastA, cmp = [['Gross margin', `=${ref(IS_, la + I.gm)}`, bm.gm], ['EBITDA margin', `=${ref(IS_, la + I.em)}`, bm.em], ['Net margin', `=${ref(IS_, la + I.nm)}`, bm.nm],
+      ['Return on equity', `=IFERROR(${ref(IS_, la + I.ni)}/${ref(BS_, la + B.eq)},"")`, bm.roe], ['Debt / equity', `=IFERROR(${ref(BS_, la + B.debt)}/${ref(BS_, la + B.eq)},"")`, bm.de]];
+    cmp.forEach(([label, f, ind], k) => {
+      const z = k < 4 ? XF.pctS : XF.mult;
+      put(`B${vr}`, label, null, 'label'); sh.merges.push(`B${vr}:D${vr}`);
+      put(`E${vr}`, f, z); put(`F${vr}`, ind, z, 'input'); put(`G${vr}`, `=IFERROR(E${vr}-F${vr},"")`, k < 4 ? '+0.0%;-0.0%' : '+0.00"x";-0.00"x"', 'output'); vr++;
+    });
+    put(`B${vr}`, 'Industry figures are indicative (rounded from published industry datasets). Confirm against the latest source before relying on them.', null, 'note');
   }
 
   // Native charts (anchored in the 2×2 grid between the tiles and the tables)
@@ -544,16 +595,16 @@ const XL_MODELS = {
     let r = 5; section(r++, 'Inputs', 5);
     const E = assume(r++, 'Equity value', near(K.op.equity, v.E) ? `=${ref(BS_, K.lastA + K.B.eq)}` : v.E, XF.money, 'Book value from the balance sheet; replace with market value if listed');
     const D = assume(r++, 'Debt value', near(K.op.debt, v.D) ? `=${ref(BS_, K.lastA + K.B.debt)}` : v.D, XF.money);
-    const RF = assume(r++, 'Risk-free rate', v.rf / 100, XF.pct2), BE = assume(r++, 'Levered beta', v.beta, XF.dec), MRP = assume(r++, 'Market risk premium', v.mrp / 100, XF.pct2);
+    const rfSrc = marketRf(), RF = assume(r++, 'Risk-free rate', v.rf / 100, XF.pct2, rfSrc ? `${rfSrc.source}, ${rfSrc.date}` : 'Default; set a live rate on the Indicators tab'), BE = assume(r++, 'Levered beta', v.beta, XF.dec), MRP = assume(r++, 'Market risk premium', v.mrp / 100, XF.pct2);
     const SP = assume(r++, 'Size / specific risk premium', v.sp / 100, XF.pct2), KD = assume(r++, 'Pre-tax cost of debt', v.kd / 100, XF.pct2), T = assume(r++, 'Tax rate', v.tax / 100, XF.pct);
     r++; section(r++, 'Calculation', 5);
-    const ke = output(r++, 'Cost of equity (CAPM)', `=${RF}+${BE}*${MRP}+${SP}`, XF.pct2, 'calc');
-    const kd = output(r++, 'After-tax cost of debt', `=${KD}*(1-${T})`, XF.pct2, 'calc');
+    const ke = output(r++, 'Cost of equity (CAPM)', `=${RF}+${BE}*${MRP}+${SP}`, XF.pct2, 'calc', 'Risk-free rate + beta × market risk premium + size premium');
+    const kd = output(r++, 'After-tax cost of debt', `=${KD}*(1-${T})`, XF.pct2, 'calc', 'Pre-tax cost of debt × (1 – tax rate)');
     const we = output(r++, 'Equity weight (E / V)', `=${E}/(${E}+${D})`, XF.pct, 'calc');
     const wd = output(r++, 'Debt weight (D / V)', `=${D}/(${E}+${D})`, XF.pct, 'calc');
     output(r++, 'Debt / equity', `=IFERROR(${D}/${E},0)`, XF.mult, 'calc');
     output(r++, 'Unlevered (asset) beta', `=IFERROR(${BE}/(1+(1-${T})*${D}/${E}),"")`, XF.dec, 'calc');
-    const w = output(r++, 'WACC', `=${we}*${ke}+${wd}*${kd}`, XF.pct2);
+    const w = output(r++, 'WACC', `=${we}*${ke}+${wd}*${kd}`, XF.pct2, 'output', 'E/V × cost of equity + D/V × after-tax cost of debt');
     r++; section(r++, 'Sensitivity: WACC by beta ↓ and market risk premium →', 5);
     const hr = r++;
     put(`A${hr}`, 'Beta \\ MRP', null, 'headL');
@@ -605,8 +656,8 @@ const XL_MODELS = {
     }
     r++; section(r++, 'Returns', n + 1);
     const X = output(r++, 'Exit equity value', `=${last}${R.eqv}`, XF.money);
-    const MO = output(r++, 'MOIC (multiple of invested capital)', `=${X}/${EQ0}`, XF.mult);
-    const IR = output(r++, 'IRR', `=MAX(0,${MO})^(1/${n})-1`, XF.pct);
+    const MO = output(r++, 'MOIC (multiple of invested capital)', `=${X}/${EQ0}`, XF.mult, 'output', 'Exit equity value ÷ equity invested');
+    const IR = output(r++, 'IRR', `=MAX(0,${MO})^(1/${n})-1`, XF.pct, 'output', 'MOIC ^ (1 ÷ holding years) – 1');
     output(r++, 'Debt repaid over the holding period', `=${DEBT0}-${last}${R.debt}`, XF.money, 'calc');
     r++; section(r++, 'Returns attribution (equity value created)', n + 1);
     const a0 = r;
@@ -839,6 +890,225 @@ const XL_MODELS = {
   } },
 };
 
+/* ---------- Consulting models added in this release ---------- */
+Object.assign(XL_MODELS, {
+  scenario: { sheet: 'Scenarios', desc: 'Bull, base and bear DCF valuations with probabilities and a weighted value', build(book, v, d) {
+    const { put, section, header, assume, output, sh } = addSheet(book, 'Scenarios', 'Scenario Analysis', sub('bull, base and bear cases valued with a DCF'));
+    const K = book.core, n = 5, C = (t) => colL(t);
+    let r = 5; section(r++, 'Shared assumptions', 6);
+    const REV = assume(r++, 'Base revenue (last actual year)', linkOr(book, 'revenue', v.rev), XF.money);
+    const DA = assume(r++, 'D&A % of revenue', d.da / 100, XF.pct), CX = assume(r++, 'CapEx % of revenue', d.capex / 100, XF.pct), NWC = assume(r++, 'Net working capital % of revenue', d.nwc / 100, XF.pct);
+    const NWC0 = assume(r++, 'Opening net working capital', `=(${ref(BS_, K.lastA + K.B.tca)}-${ref(BS_, K.lastA + K.B.cash)})-${ref(BS_, K.lastA + K.B.cl)}`, XF.money, 'Last actual year from the balance sheet');
+    const TAX = assume(r++, 'Tax rate', d.tax / 100, XF.pct), W = assume(r++, 'WACC', v.wacc / 100, XF.pct), TG = assume(r++, 'Terminal growth', v.tg / 100, XF.pct);
+    const ND = assume(r++, 'Net debt', near(K.op.debt - K.op.cash, v.netDebt) ? `=${ref(BS_, K.lastA + K.B.debt)}-${ref(BS_, K.lastA + K.B.cash)}` : v.netDebt, XF.money), SH = assume(r++, 'Shares outstanding', v.shares, XF.num);
+    r++; section(r++, 'Scenario drivers', 6);
+    header(r++, ['', 'Bull', 'Base', 'Bear']);
+    const gRow = r++, mRow = r++, pRow = r++;
+    put(`A${gRow}`, 'Revenue growth', null, 'label'); put(`A${mRow}`, 'EBITDA margin', null, 'label'); put(`A${pRow}`, 'Probability', null, 'label');
+    [[v.bullG, v.bullM, v.pBull], [0, 0, v.pBase], [v.bearG, v.bearM, v.pBear]].forEach(([dg, dm, p], j) => {
+      put(`${colL(j + 1)}${gRow}`, (v.g + dg) / 100, XF.pct, 'input'); put(`${colL(j + 1)}${mRow}`, (v.m + dm) / 100, XF.pct, 'input'); put(`${colL(j + 1)}${pRow}`, p / 100, XF.pct, 'input');
+    });
+    put(`E${pRow}`, `=SUM(B${pRow}:D${pRow})`, XF.pct, 'total'); put(`F${pRow}`, 'Should total 100%', null, 'how');
+    const evRefs = [];
+    ['Bull', 'Base', 'Bear'].forEach((name, j) => {
+      const G = `$${colL(j + 1)}$${gRow}`, M = `$${colL(j + 1)}$${mRow}`;
+      r++; section(r++, `${name} case: free cash flow and value`, 6);
+      header(r++, ['', ...Array.from({ length: n }, (_, t) => yearLabel(t + 1))]);
+      const R = {}; ['rev', 'eb', 'da', 'ebit', 'tax', 'cx', 'nwc', 'dnwc', 'fcf', 'df', 'pv'].forEach((k) => (R[k] = r++));
+      const lab = { rev: 'Revenue', eb: 'EBITDA', da: 'D&A', ebit: 'EBIT', tax: 'Taxes on EBIT', cx: 'CapEx', nwc: 'Net working capital', dnwc: 'Increase in working capital', fcf: 'Unlevered free cash flow', df: 'Discount factor', pv: 'Present value' };
+      Object.entries(R).forEach(([k, row]) => put(`A${row}`, lab[k], null, ['fcf', 'pv'].includes(k) ? 'labelB' : 'label'));
+      for (let t = 1; t <= n; t++) {
+        const c = C(t), p = C(t - 1);
+        put(`${c}${R.rev}`, t === 1 ? `=${REV}*(1+${G})` : `=${p}${R.rev}*(1+${G})`, XF.money);
+        put(`${c}${R.eb}`, `=${c}${R.rev}*${M}`, XF.money); put(`${c}${R.da}`, `=${c}${R.rev}*${DA}`, XF.money); put(`${c}${R.ebit}`, `=${c}${R.eb}-${c}${R.da}`, XF.money);
+        put(`${c}${R.tax}`, `=${c}${R.ebit}*${TAX}`, XF.money); put(`${c}${R.cx}`, `=${c}${R.rev}*${CX}`, XF.money); put(`${c}${R.nwc}`, `=${c}${R.rev}*${NWC}`, XF.money);
+        put(`${c}${R.dnwc}`, t === 1 ? `=${c}${R.nwc}-${NWC0}` : `=${c}${R.nwc}-${p}${R.nwc}`, XF.money);
+        put(`${c}${R.fcf}`, `=${c}${R.ebit}-${c}${R.tax}+${c}${R.da}-${c}${R.cx}-${c}${R.dnwc}`, XF.money, 'total');
+        put(`${c}${R.df}`, `=1/(1+${W})^${t}`, XF.df); put(`${c}${R.pv}`, `=${c}${R.fcf}*${c}${R.df}`, XF.money);
+      }
+      const ev = output(r++, `${name} enterprise value`, `=SUM(B${R.pv}:${C(n)}${R.pv})+${C(n)}${R.fcf}*(1+${TG})/(${W}-${TG})*${C(n)}${R.df}`, XF.money, 'output', 'PV of FCF + PV of terminal value');
+      output(r++, `${name} value per share`, `=(${ev.split('!')[1]}-${ND})/${SH}`, XF.money2, 'calc', '(Enterprise value – net debt) ÷ shares');
+      evRefs.push(ev.split('!')[1]);
+    });
+    r++; section(r++, 'Result', 6);
+    const wev = output(r++, 'Probability-weighted enterprise value', `=(B${pRow}*${evRefs[0]}+C${pRow}*${evRefs[1]}+D${pRow}*${evRefs[2]})/E${pRow}`, XF.money, 'output', 'Sum of (probability × scenario value) ÷ total probability');
+    output(r++, 'Probability-weighted equity value', `=${wev.split('!')[1]}-${ND}`, XF.money, 'calc', 'Weighted enterprise value – net debt');
+    output(r++, 'Range: bull minus bear', `=${evRefs[0]}-${evRefs[2]}`, XF.money, 'calc', 'Bull value – bear value');
+    sh.widths = { A: 40, B: 15, C: 15, D: 15, E: 15, F: 15, G: 40 };
+    book.out.scenario = { wev };
+  } },
+
+  workingcap: { sheet: 'WorkingCapital', desc: 'DSO, DIO, DPO, cash conversion cycle and cash released by better terms', build(book, v) {
+    const { put, section, header, assume, output, sh } = addSheet(book, 'WorkingCapital', 'Working Capital & Cash Conversion', sub('receivables, inventory and payables'));
+    let r = 5; section(r++, 'Inputs', 4);
+    const REV = assume(r++, 'Annual revenue', linkOr(book, 'revenue', v.rev), XF.money), COGS = assume(r++, 'Annual cost of goods sold', v.cogs, XF.money);
+    r++; section(r++, 'Days and balances', 4);
+    header(r++, ['', 'Current', 'Target', 'Change']);
+    const days = r; [['Receivable days (DSO)', v.dso, v.tdso], ['Inventory days (DIO)', v.dio, v.tdio], ['Payable days (DPO)', v.dpo, v.tdpo]].forEach(([l, a, b]) => { put(`A${r}`, l, null, 'label'); put(`B${r}`, a, XF.num, 'input'); put(`C${r}`, b, XF.num, 'input'); put(`D${r}`, `=C${r}-B${r}`, XF.num); r++; });
+    const bal = r;
+    [['Receivables', (c) => `=${REV}*${c}${days}/365`, 'Revenue × DSO ÷ 365'], ['Inventory', (c) => `=${COGS}*${c}${days + 1}/365`, 'COGS × DIO ÷ 365'], ['Payables', (c) => `=${COGS}*${c}${days + 2}/365`, 'COGS × DPO ÷ 365'],
+      ['Net working capital', (c) => `=${c}${bal}+${c}${bal + 1}-${c}${bal + 2}`, 'Receivables + inventory – payables'], ['Cash conversion cycle (days)', (c) => `=${c}${days}+${c}${days + 1}-${c}${days + 2}`, 'DSO + DIO – DPO']]
+      .forEach(([l, f, how], k) => { put(`A${r}`, l, null, k >= 3 ? 'labelB' : 'label'); ['B', 'C'].forEach((c) => put(`${c}${r}`, f(c), k === 4 ? XF.num : XF.money, k >= 3 ? 'total' : undefined)); put(`D${r}`, `=C${r}-B${r}`, k === 4 ? XF.num : XF.money); put(`E${r}`, how, null, 'how'); r++; });
+    r++; section(r++, 'Result', 4);
+    output(r++, 'Cash released by reaching the targets', `=B${bal + 3}-C${bal + 3}`, XF.money, 'output', 'Current working capital – target working capital');
+    output(r++, 'Cash value of one day of DSO', `=${REV}/365`, XF.money, 'calc', 'Revenue ÷ 365');
+    sh.widths = { A: 40, B: 16, C: 16, D: 16, E: 40 };
+  } },
+
+  unitecon: { sheet: 'UnitEconomics', desc: 'LTV, CAC, payback and a monthly MRR/ARR build with churn', build(book, v) {
+    const { put, section, header, assume, output, sh } = addSheet(book, 'UnitEconomics', 'Unit Economics & SaaS Metrics', sub('customer value and monthly recurring revenue'));
+    const n = Math.min(60, Math.max(6, Math.round(v.months))), C = (t) => colL(t);
+    let r = 5; section(r++, 'Inputs', 8);
+    const CU = assume(r++, 'Customers today', v.cust, XF.num), AR = assume(r++, 'Revenue per customer per month', v.arpu, XF.money2), GM = assume(r++, 'Gross margin', v.gm / 100, XF.pct);
+    const CH = assume(r++, 'Monthly churn', v.churn / 100, XF.pct), AD = assume(r++, 'New customers per month', v.adds, XF.num), AG = assume(r++, 'Growth in new customers per month', v.addg / 100, XF.pct);
+    const CAC = assume(r++, 'Customer acquisition cost', v.cac, XF.money2), FX = assume(r++, 'Fixed costs per month', v.fixed, XF.money);
+    r++; section(r++, 'Unit economics', 8);
+    const ltv = output(r++, 'Customer lifetime value (LTV)', `=IFERROR(${AR}*${GM}/${CH},0)`, XF.money, 'output', 'Monthly revenue per customer × gross margin ÷ monthly churn');
+    output(r++, 'LTV / CAC', `=IFERROR(${ltv.split('!')[1]}/${CAC},0)`, XF.mult, 'output', 'Lifetime value ÷ acquisition cost (3x or more is healthy)');
+    output(r++, 'CAC payback (months)', `=IFERROR(${CAC}/(${AR}*${GM}),0)`, XF.dec, 'calc', 'Acquisition cost ÷ monthly gross profit per customer');
+    output(r++, 'Average customer life (months)', `=IFERROR(1/${CH},0)`, XF.dec, 'calc', '1 ÷ monthly churn');
+    r++; section(r++, 'Monthly build', Math.min(n, 30));
+    header(r++, ['', ...Array.from({ length: n }, (_, t) => `M${t + 1}`)]);
+    const R = {}; ['start', 'lost', 'adds', 'end', 'mrr', 'gp', 'cac', 'fixed', 'profit', 'be'].forEach((k) => (R[k] = r++));
+    const lab = { start: 'Customers at start', lost: 'Churned customers', adds: 'New customers', end: 'Customers at end', mrr: 'MRR', gp: 'Gross profit', cac: 'Acquisition spend', fixed: 'Fixed costs', profit: 'Monthly profit', be: 'Break-even month (helper)' };
+    Object.entries(R).forEach(([k, row]) => put(`A${row}`, lab[k], null, k === 'be' ? 'note' : ['end', 'mrr', 'profit'].includes(k) ? 'labelB' : 'label'));
+    for (let t = 1; t <= n; t++) {
+      const c = C(t), p = C(t - 1);
+      put(`${c}${R.start}`, t === 1 ? `=${CU}` : `=${p}${R.end}`, XF.num);
+      put(`${c}${R.lost}`, `=${c}${R.start}*${CH}`, XF.num);
+      put(`${c}${R.adds}`, t === 1 ? `=${AD}` : `=${p}${R.adds}*(1+${AG})`, XF.num);
+      put(`${c}${R.end}`, `=${c}${R.start}-${c}${R.lost}+${c}${R.adds}`, XF.num, 'total');
+      put(`${c}${R.mrr}`, `=${c}${R.end}*${AR}`, XF.money, 'total');
+      put(`${c}${R.gp}`, `=${c}${R.mrr}*${GM}`, XF.money);
+      put(`${c}${R.cac}`, `=${c}${R.adds}*${CAC}`, XF.money);
+      put(`${c}${R.fixed}`, `=${FX}`, XF.money);
+      put(`${c}${R.profit}`, `=${c}${R.gp}-${c}${R.cac}-${c}${R.fixed}`, XF.money, 'total');
+      put(`${c}${R.be}`, `=IF(${c}${R.profit}>=0,${t},"")`, XF.num, 'note');
+    }
+    r++; section(r++, 'Result', 8);
+    output(r++, `MRR in month ${n}`, `=${C(n)}${R.mrr}`, XF.money, 'output', 'Customers at end × revenue per customer');
+    output(r++, `ARR in month ${n}`, `=${C(n)}${R.mrr}*12`, XF.money, 'output', 'MRR × 12');
+    output(r++, 'Profit break-even month', `=IF(COUNT(B${R.be}:${C(n)}${R.be})=0,"Not reached",MIN(B${R.be}:${C(n)}${R.be}))`, XF.num, 'output', 'First month with monthly profit ≥ 0');
+    sh.widths = { A: 40, ...Object.fromEntries(Array.from({ length: n }, (_, i) => [C(i + 1), 12])) };
+  } },
+
+  runway: { sheet: 'Runway', desc: 'Monthly burn, runway in months and cash-flow break-even, with funding', build(book, v) {
+    const { put, section, header, assume, output, sh } = addSheet(book, 'Runway', 'Cash Runway', sub('monthly cash projection'));
+    const n = Math.min(60, Math.max(6, Math.round(v.months))), C = (t) => colL(t);
+    let r = 5; section(r++, 'Inputs', 8);
+    const CASH = assume(r++, 'Cash today', v.cash, XF.money), RV = assume(r++, 'Monthly revenue', v.rev, XF.money), RG = assume(r++, 'Monthly revenue growth', v.revg / 100, XF.pct);
+    const CO = assume(r++, 'Monthly costs', v.cost, XF.money), CG = assume(r++, 'Monthly cost growth', v.costg / 100, XF.pct), FU = assume(r++, 'New funding', v.fund, XF.money), FM = assume(r++, 'Funding arrives in month', Math.round(v.fundM), XF.num);
+    r++; section(r++, 'Monthly cash flow', Math.min(n, 30));
+    header(r++, ['', ...Array.from({ length: n }, (_, t) => `M${t + 1}`)]);
+    const R = {}; ['rev', 'cost', 'net', 'fund', 'cash', 'out', 'be'].forEach((k) => (R[k] = r++));
+    const lab = { rev: 'Revenue', cost: 'Costs', net: 'Net cash flow', fund: 'Funding', cash: 'Closing cash', out: 'Cash-out month (helper)', be: 'Break-even month (helper)' };
+    Object.entries(R).forEach(([k, row]) => put(`A${row}`, lab[k], null, ['out', 'be'].includes(k) ? 'note' : ['net', 'cash'].includes(k) ? 'labelB' : 'label'));
+    for (let t = 1; t <= n; t++) {
+      const c = C(t), p = C(t - 1);
+      put(`${c}${R.rev}`, t === 1 ? `=${RV}` : `=${p}${R.rev}*(1+${RG})`, XF.money);
+      put(`${c}${R.cost}`, t === 1 ? `=${CO}` : `=${p}${R.cost}*(1+${CG})`, XF.money);
+      put(`${c}${R.net}`, `=${c}${R.rev}-${c}${R.cost}`, XF.money, 'total');
+      put(`${c}${R.fund}`, `=IF(${t}=${FM},${FU},0)`, XF.money);
+      put(`${c}${R.cash}`, t === 1 ? `=${CASH}+${c}${R.net}+${c}${R.fund}` : `=${p}${R.cash}+${c}${R.net}+${c}${R.fund}`, XF.money, 'total');
+      put(`${c}${R.out}`, `=IF(${c}${R.cash}<0,${t},"")`, XF.num, 'note');
+      put(`${c}${R.be}`, `=IF(${c}${R.net}>=0,${t},"")`, XF.num, 'note');
+    }
+    r++; section(r++, 'Result', 8);
+    output(r++, 'Current monthly burn', `=MAX(0,-B${R.net})`, XF.money, 'output', 'Costs – revenue in month 1 (zero if cash-flow positive)');
+    output(r++, 'Runway (months)', `=IF(COUNT(B${R.out}:${C(n)}${R.out})=0,"${n}+",MIN(B${R.out}:${C(n)}${R.out})-1)`, XF.num, 'output', 'Months before closing cash first falls below zero');
+    output(r++, 'Cash-flow break-even month', `=IF(COUNT(B${R.be}:${C(n)}${R.be})=0,"Not reached",MIN(B${R.be}:${C(n)}${R.be}))`, XF.num, 'output', 'First month where revenue covers costs');
+    output(r++, 'Lowest cash balance', `=MIN(B${R.cash}:${C(n)}${R.cash})`, XF.money, 'calc', 'Smallest closing cash in the period');
+    sh.widths = { A: 40, ...Object.fromEntries(Array.from({ length: n }, (_, i) => [C(i + 1), 12])) };
+  } },
+
+  mna: { sheet: 'MandA', desc: 'M&A accretion/dilution: EPS impact, breakeven synergies and sensitivity', build(book, v) {
+    const { put, section, header, assume, output, sh } = addSheet(book, 'MandA', 'M&A Accretion / Dilution', sub('earnings-per-share impact of an acquisition'));
+    let r = 5; section(r++, 'Inputs', 6);
+    const ANI = assume(r++, 'Buyer net income', v.ani, XF.money), ASH = assume(r++, 'Buyer shares outstanding', v.ash, XF.num), APX = assume(r++, 'Buyer share price', v.apx, XF.money2);
+    const TNI = assume(r++, 'Target net income', v.tni, XF.money), PR = assume(r++, 'Purchase price (target equity)', v.price, XF.money), STK = assume(r++, 'Paid in new shares', v.stock / 100, XF.pct);
+    const DBT = assume(r++, 'Paid with new debt', v.debt / 100, XF.pct), RT = assume(r++, 'Interest rate on new debt', v.rate / 100, XF.pct), CY = assume(r++, 'Interest earned on cash used', v.cashY / 100, XF.pct);
+    const SYN = assume(r++, 'Pre-tax synergies per year', v.syn, XF.money), T = assume(r++, 'Tax rate', v.tax / 100, XF.pct), FE = assume(r++, 'Transaction fees', v.fees, XF.money);
+    r++; section(r++, 'Calculation', 6);
+    const o = (l, f, z, s, how) => output(r++, l, f, z, s, how).split('!')[1];
+    const sa = o('Paid in shares', `=${PR}*${STK}`, XF.money, 'calc', 'Price × % in shares'), da = o('Paid with debt', `=${PR}*${DBT}`, XF.money, 'calc', 'Price × % in debt');
+    const ca = o('Cash used (incl. fees)', `=MAX(0,${PR}-${sa}-${da})+${FE}`, XF.money, 'calc', 'Price – shares – debt + fees');
+    const ns = o('New shares issued', `=${sa}/${APX}`, XF.num, 'calc', 'Paid in shares ÷ buyer share price');
+    const pni = o('Pro forma net income', `=${ANI}+${TNI}+${SYN}*(1-${T})-${da}*${RT}*(1-${T})-${ca}*${CY}*(1-${T})`, XF.money, 'calc', 'Buyer + target + after-tax synergies – after-tax new interest – lost interest on cash');
+    const e0 = o('Standalone EPS', `=${ANI}/${ASH}`, XF.money2, 'calc', 'Buyer net income ÷ buyer shares');
+    const e1 = o('Pro forma EPS', `=${pni}/(${ASH}+${ns})`, XF.money2, 'output', 'Pro forma net income ÷ (buyer shares + new shares)');
+    output(r++, 'Accretion / (dilution)', `=${e1}/${e0}-1`, XF.pctS, 'output', 'Pro forma EPS ÷ standalone EPS – 1');
+    output(r++, 'Synergies needed to break even (pre-tax)', `=MAX(0,(${e0}*(${ASH}+${ns})-(${pni}-${SYN}*(1-${T})))/(1-${T}))`, XF.money, 'output', 'Synergies at which pro forma EPS equals standalone EPS');
+    r++; section(r++, 'Sensitivity: accretion by % paid in shares ↓ and synergies →', 6);
+    const hr = r++;
+    put(`A${hr}`, 'Shares \\ Synergies', null, 'headL');
+    [0, 0.5, 1, 1.5, 2].forEach((k, j) => put(`${colL(j + 1)}${hr}`, `=${SYN}*${k}`, XF.money, 'head'));
+    [0, 0.25, 0.5, 0.75, 1].forEach((st) => {
+      const row = r++;
+      put(`A${row}`, st, XF.pct, 'headL');
+      for (let j = 1; j <= 5; j++) {
+        const c = colL(j), syn = `${c}$${hr}`, stp = `$A${row}`;
+        const ni = `(${ANI}+${TNI}+${syn}*(1-${T})-${PR}*${DBT}*${RT}*(1-${T})-(MAX(0,${PR}-${PR}*${stp}-${PR}*${DBT})+${FE})*${CY}*(1-${T}))`;
+        put(`${c}${row}`, `=${ni}/(${ASH}+${PR}*${stp}/${APX})/${e0}-1`, XF.pctS);
+      }
+    });
+    sh.widths = { A: 42, B: 16, C: 16, D: 16, E: 16, F: 16 };
+  } },
+
+  accuracy: { sheet: 'Accuracy', desc: 'Forecast accuracy backtest: forecast vs actual for recent years', needsData: true, build(book) {
+    const { put, section, header, output, sh } = addSheet(book, 'Accuracy', 'Forecast Accuracy (Backtest)', sub('how well the forecasting method predicts your own history'));
+    const bt = backtest();
+    let r = 5;
+    put(`A${r++}`, 'Each recent year is forecast using only the years before it, with the same drivers and engine as this model, then compared with the actual result.', null, 'note');
+    if (!bt) { put(`A${r}`, 'At least 3 years of statements are needed for a backtest.', null, 'note'); return; }
+    r++; section(r++, 'Forecast vs actual', 6);
+    header(r++, ['Year / metric', 'Forecast', 'Actual', 'Error', 'Accuracy']);
+    const keyOf = { Revenue: 'revenue', EBITDA: 'ebitda', 'Net income': 'netIncome' }, ranges = {};
+    ['Revenue', 'EBITDA', 'Net income'].forEach((m) => {
+      const rows = bt.rows.filter((x) => x.metric === m);
+      if (!rows.length) return;
+      const r0 = r;
+      rows.forEach((x) => {
+        const yi = state.years.indexOf(x.year), h = book.hist?.[keyOf[m]];
+        put(`A${r}`, `${x.year} ${m}`, null, 'label');
+        put(`B${r}`, x.forecast, XF.money);
+        put(`C${r}`, h && yi >= 0 ? `=Historicals!${colL(yi + 1)}${h.row}` : x.actual, XF.money, h ? 'link' : 'input');
+        put(`D${r}`, `=ABS(B${r}-C${r})/ABS(C${r})`, XF.pct); put(`E${r}`, `=MAX(0,1-D${r})`, XF.pct); r++;
+      });
+      ranges[m] = `D${r0}:D${r - 1}`;
+    });
+    r++; section(r++, 'Accuracy', 6);
+    const accs = Object.entries(ranges).map(([m, rg]) => output(r++, `${m} accuracy`, `=MAX(0,1-AVERAGE(${rg}))`, XF.pct, 'calc', '100% – average percentage error').split('!')[1]);
+    const ov = output(r++, 'Overall forecast accuracy', `=AVERAGE(${accs.join(',')})`, XF.pct, 'output', 'Average of the metric accuracies (target 90%)');
+    output(r++, 'Meets the 90% target?', `=IF(${ov.split('!')[1]}>=0.9,"Yes","Not yet")`, null, 'calc');
+    sh.widths = { A: 34, B: 16, C: 16, D: 12, E: 12 };
+    book.out.accuracy = { overall: ov };
+  } },
+});
+
+const FORMULA_GUIDE = [
+  ['Forecasting', 'Revenue', 'Prior-year revenue × (1 + growth rate)'], ['Forecasting', 'Gross profit', 'Revenue – cost of goods sold'], ['Forecasting', 'EBITDA', 'Gross profit – operating expenses'],
+  ['Forecasting', 'EBIT (operating profit)', 'EBITDA – depreciation & amortization'], ['Forecasting', 'Net income', '(EBIT – interest) × (1 – tax rate)'], ['Forecasting', 'Interest expense', 'Opening debt × interest rate'],
+  ['Balance sheet', 'Balance check', 'Total assets – total liabilities – equity = 0'], ['Balance sheet', 'Net working capital', 'Non-cash current assets – current liabilities'], ['Balance sheet', 'Equity roll-forward', 'Opening equity + net income – dividends'],
+  ['Cash flow', 'Cash from operations', 'Net income + D&A – increase in working capital'], ['Cash flow', 'Free cash flow', 'Cash from operations – capital expenditure'],
+  ['Valuation', 'Unlevered free cash flow', 'EBIT × (1 – tax rate) + D&A – CapEx – increase in working capital'], ['Valuation', 'Discount factor', '1 ÷ (1 + WACC) ^ year'],
+  ['Valuation', 'Terminal value', 'Final-year FCF × (1 + g) ÷ (WACC – g)'], ['Valuation', 'Enterprise value', 'Sum of discounted FCF + discounted terminal value'], ['Valuation', 'Equity value', 'Enterprise value – net debt (debt – cash)'],
+  ['Cost of capital', 'Cost of equity (CAPM)', 'Risk-free rate + beta × market risk premium (+ size premium)'], ['Cost of capital', 'WACC', 'E/V × cost of equity + D/V × pre-tax cost of debt × (1 – tax rate)'],
+  ['Cost of capital', 'Unlevered beta', 'Levered beta ÷ (1 + (1 – tax rate) × debt ÷ equity)'], ['Returns', 'NPV', 'Σ cash flow ÷ (1 + rate) ^ year – initial investment'], ['Returns', 'IRR', 'Discount rate at which NPV = 0'],
+  ['Returns', 'MOIC', 'Exit equity value ÷ equity invested'], ['Returns', 'Payback period', 'Years until cumulative cash flow turns positive'], ['Ratios', 'Current ratio', 'Current assets ÷ current liabilities'],
+  ['Ratios', 'Net debt / EBITDA', '(Debt – cash) ÷ EBITDA'], ['Ratios', 'Return on equity', 'Net income ÷ shareholders’ equity'], ['Working capital', 'Cash conversion cycle', 'DSO + DIO – DPO'],
+  ['Unit economics', 'Customer lifetime value', 'Monthly revenue per customer × gross margin ÷ monthly churn'], ['Unit economics', 'CAC payback', 'Acquisition cost ÷ monthly gross profit per customer'],
+  ['M&A', 'Accretion / dilution', 'Pro forma EPS ÷ standalone EPS – 1'], ['Accuracy', 'Forecast accuracy', '100% – average |forecast – actual| ÷ |actual|'],
+];
+function sheetFormulaGuide(book) {
+  const { put, section, sh } = addSheet(book, 'Formula Guide', 'Formula Guide', 'How every key number in this workbook is calculated', '7A8699');
+  section(5, 'Formulas', 3);
+  put('A6', 'Area', null, 'headL'); put('B6', 'Measure', null, 'headL'); put('C6', 'Formula', null, 'headL');
+  FORMULA_GUIDE.forEach(([area, m, f], i) => { put(`A${7 + i}`, area, null, 'label'); put(`B${7 + i}`, m, null, 'labelB'); put(`C${7 + i}`, f, null, 'label'); });
+  const r = 8 + FORMULA_GUIDE.length;
+  put(`A${r}`, 'Tip: click any black cell in another sheet to see its live Excel formula in the formula bar. Blue cells are inputs you can change.', null, 'note');
+  sh.widths = { A: 20, B: 30, C: 80 };
+}
+
 /* ---------- Assemble ---------- */
 function modelInputs(id) {
   if (id === 'feasibility') return document.querySelector('#f-inv') ? feasInputs() : Object.fromEntries(FEAS.map(([k, , val]) => [k, val]));
@@ -846,7 +1116,7 @@ function modelInputs(id) {
   return Object.fromEntries(m.inputs(d).map(([k, , val, t]) => [k, t === 'text' ? val : +val]));
 }
 
-const SHEET_ORDER = ['Cover', 'Dashboard', 'Assumptions', IS_, BS_, CF_, 'DCF', 'Ratios', 'WACC', 'Comps', 'MonteCarlo', 'LBO', 'Loan', 'NPV_IRR', 'Breakeven', 'Feasibility', 'Historicals'];
+const SHEET_ORDER = ['Cover', 'Dashboard', 'Assumptions', IS_, BS_, CF_, 'DCF', 'Scenarios', 'Ratios', 'Accuracy', 'WACC', 'Comps', 'MonteCarlo', 'LBO', 'MandA', 'Loan', 'NPV_IRR', 'Breakeven', 'Feasibility', 'WorkingCapital', 'UnitEconomics', 'Runway', 'Formula Guide', 'Historicals'];
 
 function buildBook(ids, overrides = {}) {
   const book = newBook(), d = defaults(), withData = hasData();
@@ -868,6 +1138,8 @@ function buildBook(ids, overrides = {}) {
     built.push(x);
   });
   if (!ids.includes('ratios')) { /* ratios are cheap and always useful */ sheetRatios(book); built.push(XL_MODELS.ratios); }
+  if (withData && !ids.includes('accuracy') && state.years.length >= 3) { XL_MODELS.accuracy.build(book); built.push(XL_MODELS.accuracy); }
+  sheetFormulaGuide(book);
   sheetDashboard(dash, book);
 
   // Cover: contents and colour legend
@@ -878,7 +1150,7 @@ function buildBook(ids, overrides = {}) {
   put(`A${r}`, 'Sheet', null, 'headL'); put(`B${r++}`, 'What it contains', null, 'headL');
   const contents = [['Dashboard', 'KPI tiles, charts, financial summary and valuation summary'], ['Assumptions', 'Forecast drivers by year (change the blue cells)'],
     [IS_, 'Revenue to net income, actual and forecast, with margins'], [BS_, 'Assets, liabilities and equity, with a balance check'], [CF_, 'Operating, investing and financing cash flows, free cash flow'],
-    ...built.map((x) => [x.sheet, x.desc]), ...(withData ? [['Historicals', 'Your uploaded statements (the source for green links)']] : [])];
+    ...built.map((x) => [x.sheet, x.desc]), ['Formula Guide', 'Every key formula in plain English'], ...(withData ? [['Historicals', 'Your uploaded statements (the source for green links)']] : [])];
   contents.sort((a, b) => SHEET_ORDER.indexOf(a[0]) - SHEET_ORDER.indexOf(b[0])).forEach(([s, t]) => { put(`A${r}`, s, null, 'labelB'); put(`B${r++}`, t, null, 'label'); });
   r++; section(r++, 'How to use this model', 2);
   [['input', 'Blue cells are inputs. Change them and every formula updates.'], ['link', 'Green cells link to the source data.'], ['calc', 'Black cells are formulas. Avoid typing over them.'], ['output', 'Shaded cells are key outputs.']]
@@ -898,6 +1170,7 @@ const XL_STYLE = {
   title: { font: { bold: true, size: 16, color: { argb: 'FF0B2545' } } },
   subtitle: { font: { italic: true, size: 10, color: { argb: 'FF5C6B80' } } },
   note: { font: { italic: true, size: 9, color: { argb: 'FF7A8699' } } },
+  how: { font: { italic: true, size: 9, color: { argb: 'FF5C6B80' } }, alignment: { wrapText: false } },
   section: { font: { bold: true, color: { argb: 'FFFFFFFF' } }, fill: fill('FF0B2545') },
   head: { font: { bold: true, color: { argb: 'FF14213D' } }, fill: fill('FFE9EDF3'), alignment: { horizontal: 'right' }, border: { bottom: thin() } },
   headL: { font: { bold: true, color: { argb: 'FF14213D' } }, fill: fill('FFE9EDF3'), border: { bottom: thin() } },
