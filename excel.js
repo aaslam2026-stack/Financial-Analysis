@@ -19,7 +19,7 @@ function loadScript(url, global) {
 }
 
 const XF = {
-  money: '#,##0;(#,##0);"–"', money2: '$#,##0.00;($#,##0.00)', pct: '0.0%', pctS: '0.0%;(0.0%);"–"', pct2: '0.00%', mult: '0.00"x"',
+  money: '#,##0;(#,##0);"–"', get money2() { const c = curFmt('#,##0.00'); return `${c};(${c})`; }, pct: '0.0%', pctS: '0.0%;(0.0%);"–"', pct2: '0.00%', mult: '0.00"x"',
   num: '#,##0', dec: '0.00', df: '0.0000', yrs: '0.0 "yrs"', check: '#,##0.00;(#,##0.00);"✓ balanced"',
 };
 const colL = (i) => { let s = ''; i++; while (i) { const m = (i - 1) % 26; s = String.fromCharCode(65 + m) + s; i = (i - m - 1) / 26; } return s; };
@@ -287,7 +287,7 @@ function buildCore(book, dr, n) {
   const book_ = { IS: addSheet(book, IS_, 'Income Statement', sub('actual and forecast')), BS: addSheet(book, BS_, 'Balance Sheet', sub('actual and forecast')), CF: addSheet(book, CF_, 'Cash Flow Statement', sub('actual and forecast')) };
 
   const head = (api) => {
-    api.put('A5', 'USD', null, 'headL');
+    api.put('A5', currency, null, 'headL');
     allCols.forEach((c, j) => api.put(`${c}5`, colLabel(j), null, j < H ? 'headA' : 'headF'));
     api.put(`${aCol(0)}4`, withData ? 'Actual' : 'Base year', null, 'bandA');
     api.put(`${fCol(1)}4`, 'Forecast', null, 'bandF');
@@ -585,7 +585,7 @@ function sheetDashboard(dash, book) {
   const tRow = 48;
   put(`B${tRow - 1}`, 'Financial summary', null, 'section');
   sh.sections.push([tRow - 1, allCols.length + 2]);
-  put(`B${tRow}`, 'USD', null, 'headL');
+  put(`B${tRow}`, currency, null, 'headL');
   const sc = (j) => colL(2 + j);
   allCols.forEach((c, j) => put(`${sc(j)}${tRow}`, colLabel(j), null, j < H ? 'headA' : 'headF'));
   const lines = [['Revenue', IS_, I.rev, XF.money], ['EBITDA', IS_, I.ebitda, XF.money], ['Net income', IS_, I.ni, XF.money], ['Free cash flow', CF_, C.fcf, XF.money], ['Cash', BS_, B.cash, XF.money], ['Total debt', BS_, B.debt, XF.money], ['Gross margin', IS_, I.gm, XF.pctS], ['EBITDA margin', IS_, I.em, XF.pctS], ['Net margin', IS_, I.nm, XF.pctS]];
@@ -1197,6 +1197,7 @@ function modelInputs(id) {
 const SHEET_ORDER = ['Cover', 'Dashboard', 'Assumptions', IS_, BS_, CF_, 'DCF', 'Scenarios', 'Ratios', 'Accuracy', 'WACC', 'Comps', 'MonteCarlo', 'LBO', 'MandA', 'Loan', 'NPV_IRR', 'Breakeven', 'Feasibility', 'WorkingCapital', 'UnitEconomics', 'Runway', 'Formula Guide', 'Historicals'];
 
 function buildBook(ids, overrides = {}) {
+  ids = ids.filter((id) => id !== 'feasibility'); // feasibility has its own standalone workbook
   const book = newBook(), d = defaults(), withData = hasData();
   // Forecast drivers: from the 3-statement inputs or DCF inputs when given, otherwise from history
   let dr = d.dr, n = 5;
@@ -1344,7 +1345,7 @@ async function bookToBuffer(book) {
       properties: { tabColor: { argb: 'FF' + sh.tab } },
       pageSetup: { orientation: 'landscape', fitToPage: true, fitToWidth: 1, fitToHeight: 0, margins: { left: 0.4, right: 0.4, top: 0.5, bottom: 0.5, header: 0.3, footer: 0.3 } },
     });
-    ws.headerFooter.oddFooter = `&L&8${xmlEsc(state.company || 'Finance Studio')} · ${xmlEsc(sh.name)}&R&8Page &P of &N`;
+    ws.headerFooter.oddFooter = `&L&8${xmlEsc(book.footerName || state.company || 'Finance Studio')} · ${xmlEsc(sh.name)}&R&8Page &P of &N`;
     Object.entries(sh.widths).forEach(([c, w]) => { ws.getColumn(c).width = w; });
     Object.entries(sh.heights).forEach(([r, h]) => { ws.getRow(+r).height = h; });
     sh.sections.forEach(([row, lastCol]) => { for (let c = 0; c <= lastCol; c++) Object.assign(ws.getCell(`${colL(c)}${row}`), XL_STYLE.section); });
@@ -1371,6 +1372,34 @@ async function bookToBuffer(book) {
     buf = await zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE' });
   }
   return injectCharts(buf, book.sheets.findIndex((s) => s.name === 'Dashboard') + 1, book.charts, book);
+}
+
+// Feasibility report: a standalone workbook (Cover + Feasibility) that never includes uploaded statements or other models
+function buildFeasibilityBook(v) {
+  const book = newBook();
+  book.footerName = v.name || 'Feasibility report';
+  const cover = addSheet(book, 'Cover', `Feasibility Report: ${v.name || 'Project'}`, `Prepared with Finance Studio on ${new Date().toLocaleDateString()} · figures in ${currency}`);
+  XL_MODELS.feasibility.build(book, v);
+  const { put, section, sh } = cover;
+  let r = 5;
+  section(r++, 'Contents', 2);
+  put(`A${r}`, 'Feasibility', null, 'labelB'); put(`B${r++}`, 'Assumptions, cash flows, NPV, IRR, payback, NPV profile, sensitivity and verdict', null, 'label');
+  r++; put(`A${r++}`, 'This is a standalone project report. It does not use any uploaded financial statements.', null, 'note');
+  put(`A${r++}`, 'Blue cells are inputs; black cells are formulas.', null, 'note');
+  put(`A${r}`, 'Models are for informational purposes only and are not financial advice.', null, 'note');
+  sh.widths = { A: 30, B: 90 };
+  evaluateBook(book);
+  return book;
+}
+async function downloadFeasibilityWorkbook(v, filename) { saveBuffer(await bookToBuffer(buildFeasibilityBook(v)), filename); }
+function saveBuffer(buf, filename) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
 }
 
 async function downloadModelWorkbook(ids, filename, overrides) {

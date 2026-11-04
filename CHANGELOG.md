@@ -1,5 +1,22 @@
 # Changelog
 
+## 2026-11-04 (update) — Standalone feasibility, currencies, clean data replacement
+
+### Changed
+- **The Feasibility Report is now a standalone product.**
+  - It downloads its own workbook (Cover + Feasibility only).
+  - That workbook never includes uploaded statements, the 3-statement core or any other model.
+  - It is no longer offered in the multi-model Excel builder.
+- **The company name no longer appears in the top bar.** That spot now holds a currency picker.
+- **Every currency is available:** all 159 ISO 4217 currencies the browser supports.
+  - The currency you pick applies to every model, the dashboard, the feasibility report, the Model Builder and Excel number formats.
+  - Your choice is remembered.
+- **Removing and replacing statements:**
+  - A "Remove statements" button (with confirmation) now appears wherever your data is summarised.
+  - A new upload fully replaces the old one, and nothing is merged.
+  - The company name field always starts empty; when you leave it blank, the file name is used instead.
+  - The Model Builder rebuilds from the new statements (or the example, after removal) instead of keeping the previous company's figures.
+
 ## 2026-11-04 — Model Builder, tested finance engine, integrity checks
 
 ### Added

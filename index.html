@@ -26,7 +26,7 @@
         <a href="#feasibility" data-view="feasibility">Feasibility</a>
         <a href="#upload" data-view="upload">My Data</a>
       </nav>
-      <div class="company-pill" id="companyPill">No data loaded</div>
+      <label class="currency-pick" title="Currency used by every model"><span class="sr-only">Currency</span><select id="currencySelect" aria-label="Currency"></select></label>
       <div class="theme-pick">
         <button class="theme-btn" id="themeBtn" type="button" aria-haspopup="true" aria-expanded="false"><i id="themeSwatch"></i><span>Theme</span></button>
         <div class="theme-menu" id="themeMenu" hidden></div>
@@ -295,7 +295,7 @@
       <header class="page-head">
         <p class="eyebrow">Investment appraisal</p>
         <h1>Feasibility Report</h1>
-        <p class="muted">Enter your project details to get a full report with NPV, IRR, payback, sensitivity and a clear verdict.</p>
+        <p class="muted">A standalone report: enter your project details to get NPV, IRR, payback, sensitivity and a clear verdict. It is separate from the financial models and does not use your uploaded statements.</p>
       </header>
       <div class="glass card no-print">
         <div class="form-grid" id="feasForm"></div>

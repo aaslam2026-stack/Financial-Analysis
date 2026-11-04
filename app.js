@@ -140,17 +140,37 @@ const L = (k) => last(S(k));
 const hasData = () => !!S('revenue');
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
+/* ---------- Currency (every ISO 4217 currency the browser knows) ---------- */
+const CURRENCY_FALLBACK = ['USD', 'EUR', 'GBP', 'JPY', 'CNY', 'INR', 'PKR', 'AED', 'SAR', 'CAD', 'AUD', 'CHF', 'SGD', 'HKD', 'ZAR', 'BRL', 'MXN', 'TRY', 'KRW', 'NGN', 'EGP', 'BDT', 'QAR', 'KWD'];
+const CURRENCIES = (() => { try { return Intl.supportedValuesOf('currency'); } catch (e) { return CURRENCY_FALLBACK; } })();
+let currency = (() => { try { const c = localStorage.getItem('fs-currency'); return c && /^[A-Z]{3}$/.test(c) ? c : 'USD'; } catch (e) { return 'USD'; } })();
+const currencyName = (c) => { try { return new Intl.DisplayNames(['en'], { type: 'currency' }).of(c); } catch (e) { return c; } };
+const currencySymbol = (c = currency) => {
+  try { return new Intl.NumberFormat('en-US', { style: 'currency', currency: c, currencyDisplay: 'narrowSymbol' }).formatToParts(0).find((x) => x.type === 'currency').value; } catch (e) { return c + ' '; }
+};
+// Excel number format with the chosen currency symbol, e.g. "€"#,##0.00
+const curFmt = (body) => { const s = currencySymbol(); return `"${s.replace(/"/g, '')}"${body}`; };
+const currencyOptions = (sel) => CURRENCIES.map((c) => `<option value="${c}"${c === sel ? ' selected' : ''}>${c} · ${esc(currencyName(c))}</option>`).join('');
+function setCurrency(c) {
+  if (!/^[A-Z]{3}$/.test(c)) return;
+  currency = c;
+  try { localStorage.setItem('fs-currency', c); } catch (e) {}
+  const sel = document.getElementById('currencySelect');
+  if (sel && sel.value !== c) sel.value = c;
+  route();
+}
+
 // Formatted values keep their raw number (and an Excel number format) so exports stay numeric
 const tag = (s, raw, z) => Object.assign(new String(s), { raw, z });
 const bad = (n) => n == null || !isFinite(n);
 function fmt(n, money = true) {
   if (bad(n)) return '—';
-  const a = Math.abs(n), sign = n < 0 ? '-' : '', p = money ? '$' : '';
-  const z = money ? '$#,##0;-$#,##0' : '#,##0';
+  const a = Math.abs(n), sign = n < 0 ? '-' : '', p = money ? currencySymbol() : '';
+  const z = money ? `${curFmt('#,##0')};-${curFmt('#,##0')}` : '#,##0';
   if (a >= 1e9) return tag(`${sign}${p}${(a / 1e9).toFixed(2)}B`, n, z);
   if (a >= 1e6) return tag(`${sign}${p}${(a / 1e6).toFixed(2)}M`, n, z);
   if (a >= 1e3) return tag(`${sign}${p}${(a / 1e3).toFixed(1)}K`, n, z);
-  return tag(`${sign}${p}${a.toFixed(a < 10 && a % 1 ? 2 : 0)}`, n, money ? '$#,##0.00' : '#,##0.00');
+  return tag(`${sign}${p}${a.toFixed(a < 10 && a % 1 ? 2 : 0)}`, n, money ? curFmt('#,##0.00') : '#,##0.00');
 }
 const pct = (n, d = 1) => (bad(n) ? '—' : tag(`${(n * 100).toFixed(d)}%`, n, d > 1 ? '0.00%' : '0.0%'));
 const xf = (n) => (bad(n) ? '—' : tag(`${n.toFixed(2)}x`, n, '0.00"x"'));
@@ -265,7 +285,7 @@ function uploaderHTML() {
       <span class="formats"><b>PDF</b><b>XLSX</b><b>XLS</b><b>CSV</b></span>
     </label>
     <div class="form-grid tight">
-      <div class="field"><label>Company name</label><input class="co-name" placeholder="e.g. Acme Holdings" value="${esc(state.company === SAMPLE_COMPANY ? '' : state.company || '')}"></div>
+      <div class="field"><label>Company name</label><input class="co-name" placeholder="e.g. Acme Holdings" value=""></div>
       <div class="field"><label>Figures are in</label><select class="units">
         <option value="auto">Auto-detect</option><option value="1">Actual amounts</option><option value="1000">Thousands</option><option value="1000000">Millions</option>
       </select></div>
@@ -296,13 +316,26 @@ function applyRows(rows, company, mult = 'auto', root, source = '') {
       : /\b(in|of)\b[^,.;]{0,20}\bthousands?\b|\(thousands?\)|\(000s?\)|[$€£]\s?000|'000|\busd ?000/.test(text) ? 1e3 : 1;
   }
   const items = Object.fromEntries(Object.entries(parsed.items).map(([k, a]) => [k, a.map((v) => (v == null ? null : v * +mult))]));
+  // A new upload replaces the previous statements entirely; nothing is merged
   state = { company: company || 'My Company', years: parsed.years, items: derive(items) };
+  manualMode = false;
   dash = { from: 0, to: null, metric: 'revenue' };
   save();
   const found = Object.keys(parsed.items).length;
   uploadNote = `${source ? esc(source) + ': ' : ''}found ${found} line items across ${parsed.years.length} periods${+mult > 1 ? ` (scaled from ${+mult === 1e6 ? 'millions' : 'thousands'})` : ''}.${S('revenue') ? '' : ' No revenue line was found, so some models will use default values.'}`;
   refreshAll();
   return true;
+}
+// Remove the uploaded statements completely (after confirmation), so the next upload starts clean
+function removeData() {
+  if (!hasData() && !Object.keys(state.items).length) return;
+  if (!confirm(`Remove ${state.company || 'the uploaded statements'} from Finance Studio? Your next upload will start from a clean slate.`)) return;
+  state = { company: '', years: [], items: {} };
+  uploadNote = '';
+  manualMode = false;
+  dash = { from: 0, to: null, metric: 'revenue' };
+  try { localStorage.removeItem(STORE); } catch (e) {}
+  route();
 }
 const loadSample = () => applyRows(parseCSV(SAMPLE_CSV), SAMPLE_COMPANY, 1, null, 'Sample company');
 
@@ -385,7 +418,6 @@ function renderDashboard() {
   $('#dashEmpty').hidden = on;
   $('#dashContent').hidden = !on;
   $('#dlPowerBI').hidden = !on;
-  $('#companyPill').textContent = on ? state.company : 'No data loaded';
   if (!on) return;
 
   const n = state.years.length;
@@ -1064,7 +1096,7 @@ function generateReport() {
 
   out.innerHTML = `<div class="glass card report">
     <h2>${esc(v.name)}: Feasibility Report</h2>
-    <p class="muted small">Prepared ${new Date().toLocaleDateString()}${hasData() ? ` · Company: ${esc(state.company)}` : ''}</p>
+    <p class="muted small">Prepared ${new Date().toLocaleDateString()} · Standalone project report (independent of any uploaded statements) · Figures in ${currency}</p>
     <div class="verdict ${cls}"><strong>${title}</strong>${passed} of 4 checks passed.</div>
     <h3>Executive summary</h3>
     <ul>${checks.map(([ok, t]) => `<li>${ok ? '✅' : '⚠️'} ${t}</li>`).join('')}</ul>
@@ -1084,7 +1116,7 @@ function generateReport() {
 
 async function downloadReport() {
   try {
-    await downloadModelWorkbook(['feasibility'], `${slug($('#f-name').value || 'project')}-feasibility.xlsx`, { feasibility: feasInputs() });
+    await downloadFeasibilityWorkbook(feasInputs(), `${slug($('#f-name').value || 'project')}-feasibility.xlsx`);
   } catch (e) { alert(e.message || e); }
 }
 
@@ -1115,7 +1147,7 @@ const CATALOG = [
     outputs: ['Break-even units and revenue', 'Margin of safety and operating leverage', 'Revenue vs cost chart'],
     needs: 'Fixed costs, price and variable cost per unit', best: 'Pricing, new products and cost planning.' },
   { id: 'feasibility', group: 'Projects & investments', file: 'feasibility-report.xlsx', href: '#feasibility', cta: 'Build this report',
-    title: 'Feasibility Report', desc: 'A complete investment appraisal of a new project with a clear verdict and recommendations.',
+    title: 'Feasibility Report', desc: 'A standalone investment appraisal of a new project with a clear verdict and recommendations. Separate from the financial models and your uploaded statements.',
     outputs: ['Verdict: Feasible, Feasible with conditions or Not feasible', 'Cash flows, NPV, IRR, payback and break-even', 'Sensitivity to revenue and cost changes'],
     needs: 'Project assumptions only; no statements needed', best: 'Business cases for lenders, investors or the board.' },
   { id: 'ratios', group: 'Performance', file: 'ratio-analysis.xlsx',
@@ -1414,7 +1446,7 @@ const ICONS = {
   handshake: '<svg viewBox="0 0 100 100" fill="none" stroke="currentColor" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"><path d="M8 40l16-10 18 6 12-8 12 4 26 8"/><path d="M8 40l14 22 14 12c4 4 10 4 14 0l22-20"/><path d="M42 36l-10 12c-2 4 4 8 8 4l10-8 16 14"/><path d="M92 40L78 62"/></svg>',
 };
 const STAGES = [
-  { title: 'Startup', sub: 'New ventures and projects', text: 'Check an idea pays off before you commit money.', ids: ['runway', 'unitecon', 'breakeven', 'npv', 'feasibility'], icon: 'seed' },
+  { title: 'Startup', sub: 'New ventures and projects', text: 'Check an idea pays off before you commit money.', ids: ['runway', 'unitecon', 'breakeven', 'npv'], icon: 'seed' },
   { title: 'Growing company', sub: 'Scaling revenue and planning cash', text: 'Forecast the statements and see what the business is worth.', ids: ['forecast', 'dcf', 'scenario', 'workingcap', 'accuracy', 'dashboard'], icon: 'sprout' },
   { title: 'Established company', sub: 'Valuing a mature business', text: 'Cross-check value with cash flows, peers and risk.', ids: ['dcf', 'comps', 'wacc', 'montecarlo'], icon: 'building' },
   { title: 'Deals & financing', sub: 'Buyouts, loans and refinancing', text: 'Test returns, debt capacity and repayment.', ids: ['lbo', 'mna', 'loan', 'wacc', 'comps'], icon: 'handshake' },
@@ -1441,6 +1473,7 @@ function dataSummaryHTML() {
       </div>
       <a class="btn ghost" href="#upload">View data</a>
       <button class="btn ghost" data-action="change-data">Upload different statements</button>
+      <button class="btn ghost danger" data-action="remove-data">Remove statements</button>
     </div>
     <div class="uploader-slot" hidden></div>`;
 }
@@ -1474,7 +1507,8 @@ function renderWorkspace(id) {
 }
 
 /* ---------- Excel model builder page ---------- */
-const BUILD_IDS = ['dcf', 'scenario', 'comps', 'wacc', 'montecarlo', 'lbo', 'mna', 'loan', 'npv', 'breakeven', 'feasibility', 'workingcap', 'unitecon', 'runway', 'accuracy'];
+// Feasibility is deliberately not here: it is a standalone report with its own workbook
+const BUILD_IDS = ['dcf', 'scenario', 'comps', 'wacc', 'montecarlo', 'lbo', 'mna', 'loan', 'npv', 'breakeven', 'workingcap', 'unitecon', 'runway', 'accuracy'];
 let buildSel = new Set(BUILD_IDS);
 
 function renderBuild() {
@@ -1542,7 +1576,6 @@ function route() {
   const v = view === 'model' ? 'workspace' : ['build', 'builder', 'library', 'dashboard', 'indicators', 'upload', 'feasibility'].includes(view) ? view : 'library';
   $$('.view').forEach((el) => el.classList.toggle('active', el.id === `view-${v}`));
   $$('nav a').forEach((a) => a.classList.toggle('active', a.dataset.view === (v === 'workspace' ? 'library' : v)));
-  $('#companyPill').textContent = hasData() ? state.company : 'No data loaded';
   if (v === 'build') renderBuild();
   if (v === 'builder') window.renderBuilder?.();
   if (v === 'indicators') { renderIndicators(); loadMarket(); }
@@ -1581,16 +1614,13 @@ function init() {
     if (!a) return;
     if (a.dataset.action === 'sample') loadSample();
     if (a.dataset.action === 'manual') { manualMode = true; route(); }
+    if (a.dataset.action === 'remove-data') removeData();
     if (a.dataset.action === 'change-data') { a.closest('.data-summary').hidden = true; a.closest('.step').querySelector('.uploader-slot').hidden = false; }
   });
 
-  $('#clearData').addEventListener('click', () => {
-    state = { company: '', years: [], items: {} };
-    uploadNote = '';
-    manualMode = false;
-    try { localStorage.removeItem(STORE); } catch (e) {}
-    route();
-  });
+  $('#clearData').addEventListener('click', removeData);
+  $('#currencySelect').innerHTML = currencyOptions(currency);
+  $('#currencySelect').addEventListener('change', (e) => setCurrency(e.target.value));
 
   $('#catTabs').addEventListener('click', (e) => {
     const b = e.target.closest('[data-cat]');

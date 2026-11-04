@@ -10,7 +10,6 @@
   const MAX_VERSIONS = 20;
   const STEPS = ['Setup', 'Assumptions', 'Statements', 'Valuation', 'Checks', 'Export'];
   const UNITS = { actual: { div: 1, dp: 0, label: '' }, thousands: { div: 1e3, dp: 0, label: '000s' }, millions: { div: 1e6, dp: 1, label: 'millions' } };
-  const CURRENCIES = ['USD', 'EUR', 'GBP', 'CAD', 'AUD', 'JPY', 'CHF', 'INR', 'PKR', 'AED', 'SAR', 'CNY'];
 
   // Per-year drivers: key, label, kind (pct | days | amount), allowed range in display units, help text
   const DRIVERS = [
@@ -50,7 +49,7 @@
     const n = 5;
     return {
       schema: 'finance-studio-model', version: 1, id: 'm' + Date.now().toString(36), name: 'Example Co forecast', company: 'Example Co',
-      currency: 'USD', units: 'thousands', periodType: 'annual', years: n, firstYear: new Date().getFullYear(),
+      currency: typeof currency === 'string' ? currency : 'USD', units: 'thousands', dataKey: null, periodType: 'annual', years: n, firstYear: new Date().getFullYear(),
       assumptions: { growth: fill(0.08, n), grossMargin: fill(0.42, n), opexPct: fill(0.22, n), daPct: fill(0.03, n), capexPct: fill(0.04, n), taxRate: fill(0.25, n),
         dso: fill(45, n), dio: fill(50, n), dpo: fill(40, n), otherCurrentAssetsPct: fill(0.02, n), otherCurrentLiabilitiesPct: fill(0.04, n), payoutRatio: fill(0, n),
         interestRate: fill(0.06, n), debtDrawdown: fill(0, n), debtRepayment: fill(2e6, n) },
@@ -82,7 +81,7 @@
     // Other liabilities is the balancing item, so the opening balance sheet balances exactly
     const otherLiabilities = totalAssets - payables - otherCurrentLiabilities - op.debt - equity;
     const yr = parseInt(String(state.years[li]).match(/(19|20)\d{2}/)?.[0]) || new Date().getFullYear() - 1;
-    Object.assign(m, { name: `${state.company} forecast`, company: state.company, firstYear: yr + 1, source: `${state.company} statements, ${state.years[0]}–${state.years[li]}` });
+    Object.assign(m, { dataKey: dataKey(), name: `${state.company} forecast`, company: state.company, firstYear: yr + 1, source: `${state.company} statements, ${state.years[0]}–${state.years[li]}` });
     m.opening = { revenue: rev, cash: op.cash, receivables, inventory, otherCurrentAssets, ppe, payables, otherCurrentLiabilities, termDebt: op.debt, revolver: 0,
       otherLiabilities, contributedCapital, retainedEarnings };
     const days = (bal, base) => (bal != null && base ? Math.round((bal / base) * 365) : null);
@@ -309,7 +308,7 @@
     return `<div class="glass card"><h3>Model setup</h3><div class="form-grid">
       <div class="field"><label>Model name</label><input type="text" maxlength="80" data-text="name" value="${esc(bm.name)}"${dis()}></div>
       <div class="field"><label>Company</label><input type="text" maxlength="80" data-text="company" value="${esc(bm.company)}"${dis()}></div>
-      ${sel('currency', 'Currency', CURRENCIES.map((c) => [c, c]), bm.currency)}
+      <div class="field"><label>Currency</label><select data-path="currency"${dis()}>${currencyOptions(bm.currency)}</select></div>
       ${sel('units', 'Display units', [['actual', 'Actual'], ['thousands', 'Thousands (000s)'], ['millions', 'Millions']], bm.units)}
       ${sel('periodType', 'Periods', [['annual', 'Annual'], ['quarterly', 'Quarterly'], ['monthly', 'Monthly']], bm.periodType)}
       ${sel('years', 'Forecast length', [3, 4, 5, 6, 7, 8, 9, 10].map((n) => [n, `${n} years`]), bm.years)}
@@ -411,8 +410,14 @@
   }
 
   /* ---------- Render ---------- */
+  // Identifies the uploaded statements, so a new upload (or removing them) never mixes with the previous company's model
+  function dataKey() { return (typeof hasData === 'function' && hasData()) ? `${state.company}|${state.years.join(',')}|${S('revenue')?.join(',')}` : null; }
   function render() {
     if (!bm) bm = loadDraft() || modelFromData();
+    // Rebuild only when the uploaded statements change (new upload or removal), not when a saved/imported model is opened
+    const cur = dataKey() || '', seen = (() => { try { return localStorage.getItem('fs-builder-data'); } catch (e) { return null; } })();
+    if (seen != null && seen !== cur) { bm = modelFromData(); step = 0; }
+    try { localStorage.setItem('fs-builder-data', cur); } catch (e) {}
     compute();
     savedList = readSaved();
     const fails = result.checks.filter((c) => !c.pass).length;
