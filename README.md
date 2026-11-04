@@ -77,3 +77,18 @@ python3 -m http.server 8000
 ```
 
 Then open http://localhost:8000.
+
+## Model Builder and the finance engine
+
+- **Model Builder** (`#builder`): a guided flow, Setup → Assumptions → Statements → Valuation → Checks → Export, built on `lib/finance/finance.js`.
+  - Every figure on the statements can be clicked to show its formula and inputs.
+  - The Checks step lists nine integrity rules as ✅ or ❌.
+  - The Excel export repeats the same logic as live formulas and adds a Checks sheet.
+- **Sign convention**:
+  - Costs are stored as positive numbers and subtracted.
+  - On the cash flow statement, inflows are positive and outflows (CapEx, repayments, dividends, working-capital increases) are negative.
+- **Tests**: `npm test` runs `tests/finance.test.js` (Node 18+, no extra installs).
+- **Saved models** stay in the browser, with version history and JSON export and import.
+- **Database schema**: `supabase/migrations/0001_initial_schema.sql` is ready for user accounts but not connected yet.
+
+See `CHANGELOG.md` for what changed in each release.

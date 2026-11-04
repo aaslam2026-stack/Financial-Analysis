@@ -67,14 +67,22 @@ const XL_FN = {
   IFERROR: ([a, b]) => (typeof a === 'number' && !isFinite(a) ? b : a),
 };
 
+// Circular references are an error unless the book opts in with book.iterative (an explicit switch, as in Excel's
+// iterative calculation): then a cell met again mid-calculation returns its previous pass's value and the whole
+// book is recalculated until no value moves by more than 1e-9 (at most 100 passes).
 function evaluateBook(book) {
   const byName = Object.fromEntries(book.sheets.map((s) => [s.name, s]));
+  let circular = false;
   const cellVal = (sheet, addr) => {
     const c = byName[sheet]?.cells[addr];
     if (!c) return null;
     if (c.f == null) return c.v ?? null;
     if (c.r === undefined) {
-      if (c.busy) throw new Error(`Circular reference at ${sheet}!${addr}`);
+      if (c.busy) {
+        if (!book.iterative) throw new Error(`Circular reference at ${sheet}!${addr}`);
+        circular = true;
+        return c.last ?? 0;
+      }
       c.busy = true;
       c.r = evalFormula(c.f, sheet);
       c.busy = false;
@@ -134,6 +142,17 @@ function evaluateBook(book) {
     return v;
   }
   book.sheets.forEach((s) => Object.keys(s.cells).forEach((a) => cellVal(s.name, a)));
+  book.passes = 1;
+  while (book.iterative && circular && book.passes < 100) {
+    let moved = 0;
+    const formulaCells = book.sheets.flatMap((s) => Object.values(s.cells).filter((c) => c.f != null));
+    formulaCells.forEach((c) => { c.last = c.r; c.r = undefined; });
+    circular = false;
+    book.sheets.forEach((s) => Object.keys(s.cells).forEach((a) => cellVal(s.name, a)));
+    formulaCells.forEach((c) => { if (typeof c.r === 'number' && typeof c.last === 'number') moved = Math.max(moved, Math.abs(c.r - c.last)); });
+    book.passes++;
+    if (moved <= 1e-9) break;
+  }
   book.value = (sheet, addr) => cellVal(sheet, addr.replace(/\$/g, ''));
 }
 
@@ -1214,7 +1233,7 @@ function buildBook(ids, overrides = {}) {
   r++; section(r++, 'How to use this model', 2);
   [['input', 'Blue cells are inputs. Change them and every formula updates.'], ['link', 'Green cells link to the source data.'], ['calc', 'Black cells are formulas. Avoid typing over them.'], ['output', 'Shaded cells are key outputs.']]
     .forEach(([s, t]) => { put(`A${r}`, { input: 'Input', link: 'Linked', calc: 'Formula', output: 'Output' }[s], null, s); put(`B${r++}`, t, null, 'label'); });
-  r++; put(`A${r}`, 'Models are planning tools based on the data and assumptions provided. They are not investment advice.', null, 'note');
+  r++; put(`A${r}`, 'Models are for informational purposes only and are not financial advice.', null, 'note');
   sh.widths = { A: 30, B: 90 };
 
   book.sheets.sort((a, b) => SHEET_ORDER.indexOf(a.name) - SHEET_ORDER.indexOf(b.name));
@@ -1341,7 +1360,16 @@ async function bookToBuffer(book) {
     });
     sh.merges.forEach((m) => ws.mergeCells(m));
   });
-  const buf = await wb.xlsx.writeBuffer();
+  let buf = await wb.xlsx.writeBuffer();
+  if (book.iterative) {
+    // Turn on Excel's iterative calculation so the controlled circular reference (interest on average revolver balances) solves
+    const JSZip = await loadScript(JSZIP_URL, 'JSZip');
+    const zip = await JSZip.loadAsync(buf);
+    let wx = await zip.file('xl/workbook.xml').async('string');
+    wx = /<calcPr\b/.test(wx) ? wx.replace(/<calcPr\b/, '<calcPr iterate="1" iterateCount="100" iterateDelta="0.000001"') : wx.replace('</workbook>', '<calcPr iterate="1" iterateCount="100" iterateDelta="0.000001" fullCalcOnLoad="1"/></workbook>');
+    zip.file('xl/workbook.xml', wx);
+    buf = await zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE' });
+  }
   return injectCharts(buf, book.sheets.findIndex((s) => s.name === 'Dashboard') + 1, book.charts, book);
 }
 

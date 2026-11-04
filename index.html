@@ -19,7 +19,8 @@
       <a class="brand" href="#library"><span class="brand-text">Finance Studio</span></a>
       <nav id="mainNav">
         <a href="#library" data-view="library">Models</a>
-        <a href="#build" data-view="build">Build Excel Model</a>
+        <a href="#builder" data-view="builder">Model Builder</a>
+        <a href="#build" data-view="build">Excel Models</a>
         <a href="#dashboard" data-view="dashboard">Dashboard</a>
         <a href="#indicators" data-view="indicators">Indicators</a>
         <a href="#feasibility" data-view="feasibility">Feasibility</a>
@@ -95,6 +96,19 @@
         <p>Upload once. Pick the models you need. Download one Excel workbook.</p>
         <div class="row"><a class="btn btn-lg" href="#build">Upload statements <span aria-hidden="true">→</span></a><a class="link-u" href="samples/models/full-financial-model.xlsx" download>Download a sample workbook</a></div>
       </section>
+    </section>
+
+    <!-- GUIDED MODEL BUILDER (lib/finance) -->
+    <section id="view-builder" class="view">
+      <header class="page-head">
+        <p class="eyebrow">Guided model builder</p>
+        <h1>Build an investor-grade model</h1>
+        <p class="muted">Linked income statement, balance sheet and cash flow, a DCF valuation and built-in checks so the numbers always tie. Work through the steps, then export to Excel.</p>
+        <p class="b-status small" id="bStatus" role="status"></p>
+      </header>
+      <nav aria-label="Model steps"><ol class="stepper b-steps" id="bSteps"></ol></nav>
+      <div id="bBody"></div>
+      <div class="row spread b-nav"><button class="btn ghost" id="bPrev" type="button">← Back</button><button class="btn" id="bNext" type="button">Next →</button></div>
     </section>
 
     <!-- EXCEL MODEL BUILDER -->
@@ -309,7 +323,7 @@
   </section>
 
   <footer class="site-foot">
-    <div>Finance Studio · Models are planning tools based on the data and assumptions you provide, not investment advice.</div>
+    <div>Finance Studio · Models are for informational purposes only and are not financial advice.</div>
   </footer>
 
   <script src="app.js"></script>
@@ -319,5 +333,7 @@
   <script src="indicators.js"></script>
   <script src="chat.js"></script>
   <script src="excel.js"></script>
+  <script src="lib/finance/finance.js"></script>
+  <script src="builder.js"></script>
 </body>
 </html>

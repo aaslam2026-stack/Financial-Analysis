@@ -4,5 +4,8 @@
   "description": "Finance Studio: financial models from your statements. Static site plus Netlify Functions.",
   "dependencies": {
     "@anthropic-ai/sdk": "^1.4.0"
+  },
+  "scripts": {
+    "test": "node --test tests/*.test.js"
   }
 }

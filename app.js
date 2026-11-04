@@ -1539,11 +1539,12 @@ function setScheme(id) {
 /* ---------- Routing & init ---------- */
 function route() {
   const [view, arg] = (location.hash || '#library').slice(1).split('/');
-  const v = view === 'model' ? 'workspace' : ['build', 'library', 'dashboard', 'indicators', 'upload', 'feasibility'].includes(view) ? view : 'library';
+  const v = view === 'model' ? 'workspace' : ['build', 'builder', 'library', 'dashboard', 'indicators', 'upload', 'feasibility'].includes(view) ? view : 'library';
   $$('.view').forEach((el) => el.classList.toggle('active', el.id === `view-${v}`));
   $$('nav a').forEach((a) => a.classList.toggle('active', a.dataset.view === (v === 'workspace' ? 'library' : v)));
   $('#companyPill').textContent = hasData() ? state.company : 'No data loaded';
   if (v === 'build') renderBuild();
+  if (v === 'builder') window.renderBuilder?.();
   if (v === 'indicators') { renderIndicators(); loadMarket(); }
   if (v === 'library') renderLibrary();
   if (v === 'workspace') renderWorkspace(arg);
@@ -1662,6 +1663,7 @@ function init() {
   initIndicators();
   initChat();
   initRatios();
+  window.initBuilder?.();
   $('#themeBtn').addEventListener('click', (e) => {
     e.stopPropagation();
     const m = $('#themeMenu'); m.hidden = !m.hidden;
